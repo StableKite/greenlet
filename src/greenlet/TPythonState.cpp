@@ -610,6 +610,13 @@ void PythonState::tp_clear(bool own_top_frame) noexcept
     }
     PythonStateContext::tp_clear();
 #if GREENLET_PY314 && defined(Py_GIL_DISABLED)
+#if !GREENLET_PY315
+    // These owning pins represent references still held by a suspended 3.14
+    // stack. A GC tp_clear(false) does not end that stack's lifetime. Dropping
+    // them here could free its deferred function/code before abandonment has
+    // transferred the frames. Resume or actual frame disposal releases them.
+    if (own_top_frame)
+#endif
     this->c_stack_ref_snapshot.clear();
 #endif
     // If we get here owning a frame,
