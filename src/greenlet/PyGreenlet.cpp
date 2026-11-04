@@ -328,7 +328,7 @@ _green_dealloc_kill_started_non_main_greenlet(BorrowedGreenlet self)
 }
 
 
-#if GREENLET_PY315 && defined(Py_GIL_DISABLED)
+#if GREENLET_PY314 && defined(Py_GIL_DISABLED)
 static void
 green_finalize(PyGreenlet* self)
 {
@@ -361,7 +361,7 @@ green_finalize(PyGreenlet* self)
 static void
 green_dealloc(PyGreenlet* self)
 {
-#if GREENLET_PY315 && defined(Py_GIL_DISABLED)
+#if GREENLET_PY314 && defined(Py_GIL_DISABLED)
     if (PyObject_CallFinalizerFromDealloc((PyObject*)self) < 0) {
         return;  // Resurrected; another thread may already own the last ref.
     }
@@ -1005,7 +1005,7 @@ PyTypeObject PyGreenlet_MainType = {
  */
     .tp_is_gc=(inquiry)green_is_gc,         /* tp_is_gc */
 #endif
-#if GREENLET_PY315 && defined(Py_GIL_DISABLED)
+#if GREENLET_PY314 && defined(Py_GIL_DISABLED)
     .tp_finalize=(destructor)green_finalize,
 #endif
 };
@@ -1032,7 +1032,7 @@ static PyTypeObject* create_greenlet_type(PyObject* module)
 #if !GREENLET_PY315 && !(GREENLET_PY314 && defined(Py_GIL_DISABLED))
         {Py_tp_is_gc, (void*)green_is_gc},
 #endif
-#if GREENLET_PY315 && defined(Py_GIL_DISABLED)
+#if GREENLET_PY314 && defined(Py_GIL_DISABLED)
         {Py_tp_finalize, (void*)green_finalize},
 #endif
         {0, nullptr}

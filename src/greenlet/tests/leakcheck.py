@@ -125,13 +125,13 @@ def fails_leakcheck_on_legacy_gil(func):
         return fails_leakcheck_on_py314_or_less(func)
     return func
 
-def fails_leakcheck_before_315t_fixes(func):
-    """Require no leak on the CPython 3.15 free-threaded fixed path.
+def fails_leakcheck_without_ft_finalizer(func):
+    """Require no leak on the corrected CPython 3.14+ free-threaded finalizer path.
 
     Older runtime paths retain their existing expected-leak behavior.
     This does not skip the test or turn off the leak checker.
     """
-    if sys.version_info[:2] == (3, 15) and sysconfig.get_config_var('Py_GIL_DISABLED'):
+    if sys.version_info[:2] >= (3, 14) and sysconfig.get_config_var('Py_GIL_DISABLED'):
         return func
     return fails_leakcheck(func)
 

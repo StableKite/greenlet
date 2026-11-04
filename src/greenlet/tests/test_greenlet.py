@@ -14,7 +14,7 @@ from . import RUNNING_ON_MANYLINUX
 from . import PY313
 from . import PY314
 from . import RUNNING_ON_FREETHREAD_BUILD
-from .leakcheck import fails_leakcheck_before_315t_fixes
+from .leakcheck import fails_leakcheck_without_ft_finalizer
 from .leakcheck import ignores_leakcheck
 
 
@@ -565,7 +565,7 @@ class TestGreenlet(TestCase):
     def test_throw_to_dead_thread_doesnt_crash_wait(self):
         self._do_test_throw_to_dead_thread_doesnt_crash(True)
 
-    @fails_leakcheck_before_315t_fixes
+    @fails_leakcheck_without_ft_finalizer
     def test_recursive_startup(self):
         class convoluted(RawGreenlet):
             def __init__(self):
