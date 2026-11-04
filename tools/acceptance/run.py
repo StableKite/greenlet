@@ -84,6 +84,7 @@ try:
     run('compile-real-original-header-C-client', [sys.executable, '-I', '-B', 'setup.py', 'build_ext', '--inplace'], 90, client)
     for order in ('main-first', 'child-first'):
         run('real-SI-'+order, [sys.executable, '-I', '-B', tools/'check_subinterpreters.py', out/order, order, client], 55)
+        run('retained-frames-'+order, [sys.executable, '-I', '-B', tools/'check_retained_frames.py', out/('retained-frames-'+order), order], 50)
     run('real-failed-init-recovery', [sys.executable, '-I', '-B', tools/'check_failed_initialization.py', out/'failed-init', client], 90)
     run('real-suspended-child-teardown', [sys.executable, '-I', '-B', tools/'check_si_teardown.py', out/'suspended-teardown'], 50)
     run('pip-dependency-consistency', [sys.executable, '-m', 'pip', 'check'])

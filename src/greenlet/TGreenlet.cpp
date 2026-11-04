@@ -169,7 +169,14 @@ Greenlet::g_switchstack(void)
         current->exception_state << tstate;
         this->python_state.will_switch_from(tstate);
         switching_thread_state = this;
+#if GREENLET_PY311 && !GREENLET_PY312
+        {
+            GCDisabledGuard no_gc;
+            current->expose_frames();
+        }
+#else
         current->expose_frames();
+#endif
     }
     assert(this->args() || PyErr_Occurred());
     // If this is the first switch into a greenlet, this will
@@ -621,7 +628,7 @@ bool Greenlet::is_currently_running_in_some_thread() const
     return this->stack_state.active() && !this->python_state.top_frame();
 }
 
-#if GREENLET_PY312
+#if GREENLET_PY311
 void GREENLET_NOINLINE(Greenlet::expose_frames)()
 {
     if (!this->python_state.top_frame()) {
@@ -644,7 +651,7 @@ void GREENLET_NOINLINE(Greenlet::expose_frames)()
             // lazily _create_ the frame object and we don't want the
             // interpreter to lose track of it.
             //
-            #if !GREENLET_PY315
+            #if GREENLET_PY312 && !GREENLET_PY315
             // This enum value was removed in
             //    https://github.com/python/cpython/pull/141108
 

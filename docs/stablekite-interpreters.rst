@@ -37,6 +37,31 @@ The optional cleanup API releases only references owned by the implementation
 and invokes real cycle GC. It does not infer ownership from gc.get_referrers.
 Legitimate native C references remain alive until their owners release them.
 
+Frames retained after owner-thread exit
+--------------------------------------
+
+An external Python frame returned by ``gr_frame`` must survive destruction of
+the suspended greenlet after its native owner thread exits. Abandoned interpreter
+frames now transfer their references into the materialized Python frame objects
+before their native stack chunks are released. Deferred stack references become
+owning heap references. Frame critical sections protect the ownership transition
+from concurrent readers, and the top traversal root remains visible during it.
+The regression check reads code, back frames and locals concurrently in main and
+real child interpreters, then verifies collection after the last frame is freed.
+
+For older eval loops, the Python FASTCALL boundary publishes the actual caller
+operand stack while its C call is suspended. Dead-thread draining occurs at the
+explicit public getcurrent boundary, rather than inside internal TLS lookup where
+arbitrary finalizers could invalidate an in-progress switch. The twelve-slot
+capsule ABI continues to accept the original borrowed tuple/dictionary arguments.
+
+The original 172 test identities and their assertions remain. Historical
+expected-leak decorators on the affected cleanup and dead-thread-throw cases are
+removed because the corrected ownership must collect them; these cases now require
+no leak. Separate complete suites on CPython 3.10, 3.11 and 3.12 qualify backward
+compatibility, independently of CPython 3.15t acceptance. Original failing CI runs
+and native retained-frame crash controls are retained in the evidence archive.
+
 Acceptance boundaries
 ---------------------
 

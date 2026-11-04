@@ -509,7 +509,6 @@ class TestGreenlet(TestCase):
         g = mygreenlet(lambda: None)
         self.assertRaises(SomeError, g.throw, SomeError())
 
-    @fails_leakcheck_on_py314_or_less
     def _do_test_throw_to_dead_thread_doesnt_crash(self, wait_for_cleanup=False):
         result = []
         def worker():
@@ -563,15 +562,6 @@ class TestGreenlet(TestCase):
         del creator
         worker = None
         del result[:]
-        # XXX: we ought to be able to automatically fix this.
-        # See issue 252
-        self.expect_greenlet_leak = True # direct us not to wait for it to go away
-
-    @fails_leakcheck_on_py314_or_less
-    @ignores_leakcheck_if(
-        WIN and sys.version_info[:2] == (3, 10),
-        "does not leaks on Windows 3.10, but does on other platforms"
-    )
     def test_throw_to_dead_thread_doesnt_crash(self):
         self._do_test_throw_to_dead_thread_doesnt_crash()
 

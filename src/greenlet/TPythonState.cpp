@@ -245,7 +245,7 @@ void PythonState::operator<<(const PyThreadState *const tstate) noexcept
 #endif // GREENLET_PY311
 }
 
-#if GREENLET_PY312
+#if GREENLET_PY311
 void GREENLET_NOINLINE(PythonState::unexpose_frames)()
 {
     if (!this->top_frame()) {
@@ -304,6 +304,7 @@ void PythonState::operator>>(PyThreadState *const tstate) noexcept
     this->unexpose_frames();
   #else // \/ 3.11
     tstate->recursion_remaining = tstate->recursion_limit - this->recursion_depth;
+    this->unexpose_frames();
   #endif // GREENLET_PY312
   #if GREENLET_PY313
     tstate->current_frame = this->current_frame;
@@ -480,8 +481,93 @@ void PythonState::abandon_running_thread_state() noexcept
 #endif
 }
 
+#if GREENLET_PY311
+// A suspended interpreter frame is initially owned by its native stack chunk.
+// That chunk cannot outlive a dead greenlet. Move its references into the
+// already materialized Python frame object before releasing the chunk, just
+// as CPython transfers a frame which survives its execution. Unlike CPython's
+// ClearExceptCode caller, we transfer the code reference too: no eval loop will
+// return to release it on this abandoned stack.
+static void transfer_dead_frames(PyFrameObject* top) noexcept
+{
+    _PyInterpreterFrame* frame = top->f_frame;
+    while (frame) {
+        _PyInterpreterFrame* previous = frame->previous;
+        if (frame->owner == FRAME_OWNED_BY_THREAD && frame->frame_obj) {
+            PyFrameObject* object = frame->frame_obj;
+            {
+            refs::PyCriticalObjectSection frame_lock(reinterpret_cast<PyObject*>(object));
+            frame->frame_obj = nullptr;
+            auto* owned = reinterpret_cast<_PyInterpreterFrame*>(object->_f_frame_data);
+#if GREENLET_PY314
+            const Py_ssize_t count = frame->stackpointer - frame->localsplus;
+#else
+            const Py_ssize_t count = frame->stacktop;
+#endif
+            assert(count >= 0);
+            const size_t size = offsetof(_PyInterpreterFrame, localsplus)
+                + count * sizeof(frame->localsplus[0]);
+            memcpy(owned, frame, size);
+#if GREENLET_PY314
+            // Deferred stack references must become strong heap references.
+            // An already owning reference moves without another INCREF.
+            auto heap_safe = [](_PyStackRef reference) {
+#if GREENLET_PY315
+                if (PyStackRef_IsNullOrInt(reference)) { return reference; }
+#else
+                if (PyStackRef_IsNull(reference)) { return reference; }
+#endif
+                if (!PyStackRef_RefcountOnObject(reference)) {
+                    PyObject* value = PyStackRef_AsPyObjectBorrow(reference);
+                    Py_INCREF(value);
+                    reference.bits = reinterpret_cast<uintptr_t>(value);
+                }
+                return reference;
+            };
+            owned->f_executable = heap_safe(owned->f_executable);
+            owned->f_funcobj = heap_safe(owned->f_funcobj);
+            for (Py_ssize_t index = 0; index < count; ++index) {
+                owned->localsplus[index] = heap_safe(owned->localsplus[index]);
+            }
+            owned->stackpointer = owned->localsplus + count;
+#if GREENLET_PY315
+            owned->visited = 0;
+#endif
+#endif
+            owned->owner = FRAME_OWNED_BY_FRAME_OBJECT;
+            owned->previous = nullptr;
+            object->f_frame = owned;
+            if (!object->f_back && previous && previous->frame_obj) {
+                object->f_back = reinterpret_cast<PyFrameObject*>(Py_NewRef(previous->frame_obj));
+            }
+            if (!PyObject_GC_IsTracked(reinterpret_cast<PyObject*>(object))) {
+                PyObject_GC_Track(object);
+            }
+            }
+            // Release only the original frame_obj reference, which this
+            // interpreter frame owned. External Python frame owners survive.
+            Py_DECREF(object);
+        }
+        frame = previous;
+    }
+}
+#endif
+
 void PythonState::tp_clear(bool own_top_frame) noexcept
 {
+    if (own_top_frame) {
+#if GREENLET_PY311
+        PyFrameObject* top = this->_top_frame.borrow();
+        if (top) {
+            // Keep the traversal root visible if acquiring a shared frame's
+            // critical section detaches us for GC. This reference becomes our
+            // explicit top-frame ownership as frame_obj references move.
+            Py_INCREF(top);
+            transfer_dead_frames(top);
+            this->_top_frame.CLEAR();
+        }
+#endif
+    }
     PythonStateContext::tp_clear();
 #if GREENLET_PY314 && defined(Py_GIL_DISABLED)
     this->c_stack_ref_snapshot.clear();
@@ -490,34 +576,16 @@ void PythonState::tp_clear(bool own_top_frame) noexcept
     // we got dealloc'd without being finished. We may or may not be
     // in the same thread.
     if (own_top_frame) {
-#if GREENLET_PY315
-        // Release the references held by our suspended frames.
-        // this->top_frame gets implicitly cleared by the Py_CLEAR(iframe->frame_obj)
-        // of the first complete frame, so in the end we relinquish ownership of it.
-        if (this->_top_frame) {
-            for (_PyInterpreterFrame* iframe = this->_top_frame->f_frame;
-                 iframe != nullptr; iframe = iframe->previous) {
-                if (iframe->owner != FRAME_OWNED_BY_THREAD) {
-                    continue;
-                }
-                // Clear the references held by this frame's evaluation stack.
-                _PyStackRef* locals = iframe->localsplus;
-                _PyStackRef* sp = iframe->stackpointer;
-                if (sp) {
-                    while (sp > locals) {
-                        sp--;
-                        PyStackRef_CLEAR(*sp);
-                    }
-                    iframe->stackpointer = locals;
-                }
-                Py_CLEAR(iframe->f_locals);
-                Py_CLEAR(iframe->frame_obj);
-                PyStackRef_CLEAR(iframe->f_funcobj);
-                PyStackRef_CLEAR(iframe->f_executable);
+#if GREENLET_PY311
+        // References were moved into independently owned heap frames above.
+#else
+#if !GREENLET_PY311
+        for (PyFrameObject* frame = this->_top_frame.borrow(); frame; frame = frame->f_back) {
+            if (!frame->f_gen && frame->f_state == FRAME_EXECUTING) {
+                frame->f_state = FRAME_RETURNED;
             }
         }
-        this->_top_frame.relinquish_ownership();
-#else
+#endif
         this->_top_frame.CLEAR();
 #endif
     }

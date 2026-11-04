@@ -74,7 +74,7 @@ jobs:
             --mount "type=bind,source=$PWD,target=/source,readonly" \
             --mount "type=bind,source=$PWD/evidence,target=/output" \
             python:3-alpine sh -ec \
-            'apk add --no-cache build-base linux-headers nodejs npm; python -m pip install --upgrade uv; python /source/tools/acceptance/select_musl.py /output'
+            'apk add --no-cache build-base clang compiler-rt linux-headers nodejs npm; export CC=clang CXX=clang++; python -m pip install --upgrade uv; python /source/tools/acceptance/select_musl.py /output'
       - uses: actions/upload-artifact@v7
         if: always()
         with:

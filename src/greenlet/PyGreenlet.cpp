@@ -530,11 +530,64 @@ green_switch(PyGreenlet* self, PyObject* args, PyObject* kwargs)
     return green_switch_with_args(self, switch_args);
 }
 
-#if GREENLET_PY315 && defined(Py_GIL_DISABLED)
 static PyObject*
 green_switch_fast(PyGreenlet* self, PyObject* const* args,
                   Py_ssize_t nargs, PyObject* kwnames)
 {
+#if !GREENLET_PY314
+    // Older eval loops keep CALL's operand references in the caller's value
+    // stack while a native method runs, but temporarily hide that stack from
+    // frame GC. Publish only the actual argument span when it demonstrably
+    // belongs to that frame. On return the eval loop regains its old metadata;
+    // an abandoned stack retains an accurate, collectable ownership graph.
+    struct CallerStack {
+        int* depth = nullptr;
+        int saved = 0;
+        CallerStack(PyObject* const* values, Py_ssize_t count) {
+            PyThreadState* thread = PyThreadState_GET();
+#if GREENLET_PY313
+            _PyInterpreterFrame* frame = thread->current_frame;
+#elif GREENLET_PY311
+            _PyInterpreterFrame* frame = thread->cframe->current_frame;
+#else
+            PyFrameObject* frame = thread->frame;
+#endif
+            if (!frame || !values || count < 0) { return; }
+#if GREENLET_PY312
+            while (frame && frame->owner == FRAME_OWNED_BY_CSTACK) {
+                frame = frame->previous;
+            }
+            if (!frame) { return; }
+#endif
+#if GREENLET_PY313
+            PyCodeObject* code = _PyFrame_GetCode(frame);
+#else
+            PyCodeObject* code = frame->f_code;
+#endif
+#if GREENLET_PY311
+            PyObject** base = frame->localsplus + code->co_nlocalsplus;
+#else
+            PyObject** base = frame->f_valuestack;
+#endif
+            const uintptr_t low = reinterpret_cast<uintptr_t>(base);
+            const uintptr_t high = low + code->co_stacksize * sizeof(PyObject*);
+            const uintptr_t begin = reinterpret_cast<uintptr_t>(values);
+            if (begin < low || begin > high || count > (high - begin) / sizeof(PyObject*)) { return; }
+            const uintptr_t end = begin + count * sizeof(PyObject*);
+            if ((end - low) % sizeof(PyObject*)) { return; }
+#if GREENLET_PY311
+            depth = &frame->stacktop;
+            const int actual = static_cast<int>((end - reinterpret_cast<uintptr_t>(frame->localsplus)) / sizeof(PyObject*));
+#else
+            depth = &frame->f_stackdepth;
+            const int actual = static_cast<int>((end - low) / sizeof(PyObject*));
+#endif
+            saved = *depth;
+            *depth = std::max(saved, actual);
+        }
+        ~CallerStack() { if (depth) { *depth = saved; } }
+    } caller_stack(args, nargs + (kwnames ? PyTuple_GET_SIZE(kwnames) : 0));
+#endif
     // A METH_VARARGS Python call creates an argument tuple in CPython's
     // _PyObject_MakeTpCall. If this C stack is abandoned after its native
     // thread exits, that caller never returns to decref the temporary.
@@ -565,7 +618,6 @@ green_switch_fast(PyGreenlet* self, PyObject* const* args,
     keywords.CLEAR();
     return green_switch_with_args(self, switch_args);
 }
-#endif
 
 PyDoc_STRVAR(
     green_throw_doc,
@@ -864,13 +916,8 @@ green_repr(PyGreenlet* _self)
 static PyMethodDef green_methods[] = {
     {
       .ml_name="switch",
-#if GREENLET_PY315 && defined(Py_GIL_DISABLED)
       .ml_meth=reinterpret_cast<PyCFunction>(green_switch_fast),
       .ml_flags=METH_FASTCALL | METH_KEYWORDS,
-#else
-      .ml_meth=reinterpret_cast<PyCFunction>(green_switch),
-      .ml_flags=METH_VARARGS | METH_KEYWORDS,
-#endif
       .ml_doc=green_switch_doc
     },
     {.ml_name="throw", .ml_meth=(PyCFunction)green_throw, .ml_flags=METH_VARARGS, .ml_doc=green_throw_doc},

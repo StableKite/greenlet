@@ -70,7 +70,16 @@ public:
         if (!state) {
             throw PyErrOccurred(PyExc_RuntimeError, "recursive greenlet thread-state initialization");
         }
-        if (!draining) {
+        return *state;
+    }
+
+    // Destruction may run GC, Python finalizers and arbitrary greenlet
+    // switches. Only explicit public API boundaries may drain; state() is
+    // also used between publishing switch arguments and saving the C stack.
+    void drain_dead_states()
+    {
+        GreenletGlobals* globals = GetGlobals();
+        if (globals && !globals->closing.load() && !draining) {
             draining = true;
             try {
                 DrainDeadThreadStates(globals);
@@ -81,7 +90,6 @@ public:
             }
             draining = false;
         }
-        return *state;
     }
 
     operator ThreadState&() { return state(); }

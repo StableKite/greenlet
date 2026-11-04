@@ -14,6 +14,9 @@
 #include "greenlet_compiler_compat.hpp"
 #include "greenlet_refs.hpp"
 #include "greenlet_cpython_compat.hpp"
+#if !GREENLET_PY311
+#include <frameobject.h>
+#endif
 #include "greenlet_allocator.hpp"
 
 using greenlet::refs::OwnedObject;
@@ -27,7 +30,7 @@ using greenlet::refs::BorrowedGreenlet;
 #  define _PyInterpreterFrame _interpreter_frame
 #endif
 
-#if GREENLET_PY312
+#if GREENLET_PY311
 #  define Py_BUILD_CORE
 #  include "internal/pycore_frame.h"
 #endif

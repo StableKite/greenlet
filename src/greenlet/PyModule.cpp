@@ -37,7 +37,9 @@ try
         PyErr_SetString(PyExc_RuntimeError, "greenlet is being finalized");
         return nullptr;
     }
-    return GET_THREAD_STATE().state().get_current().relinquish_ownership_o();
+    ThreadState& state = GET_THREAD_STATE().state();
+    GET_THREAD_STATE().drain_dead_states();
+    return state.get_current().relinquish_ownership_o();
 }
 catch (const greenlet::PyErrOccurred&) {
     return nullptr;
