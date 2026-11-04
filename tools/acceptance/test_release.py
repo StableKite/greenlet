@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 from unittest.mock import patch
+import zipfile
 
 spec = importlib.util.spec_from_file_location('greenlet_release', Path(__file__).with_name('release.py'))
 release = importlib.util.module_from_spec(spec)
@@ -12,6 +13,9 @@ spec.loader.exec_module(release)
 carrier_spec = importlib.util.spec_from_file_location('greenlet_evidence_carrier', Path(__file__).with_name('prepare_evidence.py'))
 carrier = importlib.util.module_from_spec(carrier_spec)
 carrier_spec.loader.exec_module(carrier)
+libraries_spec = importlib.util.spec_from_file_location('greenlet_wheel_libraries', Path(__file__).with_name('copy_wheel_support_libs.py'))
+libraries = importlib.util.module_from_spec(libraries_spec)
+libraries_spec.loader.exec_module(libraries)
 
 
 class Reply:
@@ -189,6 +193,39 @@ class ReleaseControls(unittest.TestCase):
             existing.mkdir()
             with self.assertRaises(FileExistsError):
                 carrier.prepare(source, existing)
+
+    def test_wheel_support_libraries_keep_the_installed_relative_layout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed, fixture = root / 'installed', root / 'fixture'
+            installed.mkdir()
+            fixture.mkdir()
+            wheel = root / 'layout-control.whl'
+            payload = b'layout fixture, not a native runtime acceptance wheel'
+            (installed / 'greenlet.libs').mkdir()
+            (installed / 'greenlet.libs/libexample-hash.so.6').write_bytes(payload)
+            with zipfile.ZipFile(wheel, 'x') as archive:
+                archive.writestr('greenlet.libs/libexample-hash.so.6', payload)
+                archive.writestr('greenlet/original_test.py', b'original source must remain unchanged')
+            result = libraries.copy_support_libraries(wheel, installed, fixture)
+            self.assertEqual(set(result), {'greenlet.libs/libexample-hash.so.6'})
+            self.assertEqual((fixture / 'greenlet.libs/libexample-hash.so.6').read_bytes(), payload)
+            self.assertFalse((fixture / 'greenlet/original_test.py').exists())
+
+    def test_changed_or_escaping_support_library_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            installed, fixture = root / 'installed', root / 'fixture'
+            (installed / 'greenlet.libs').mkdir(parents=True)
+            fixture.mkdir()
+            (installed / 'greenlet.libs/libexample.so').write_bytes(b'changed after installation')
+            for name in ('greenlet.libs/libexample.so', 'greenlet.libs/../outside.so'):
+                wheel = root / ('changed.whl' if '..' not in name else 'escaping.whl')
+                with zipfile.ZipFile(wheel, 'x') as archive:
+                    archive.writestr(name, b'original wheel bytes')
+                with self.subTest(name=name), self.assertRaises(ValueError):
+                    libraries.copy_support_libraries(wheel, installed, fixture)
+            self.assertEqual(list(fixture.iterdir()), [])
 
 
 if __name__ == '__main__':

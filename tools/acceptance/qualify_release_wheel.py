@@ -77,6 +77,8 @@ try:
             shutil.copyfile(path, target)
             payloads[str(relative)] = sha(path)
     assert len(payloads) == 3
+    run('preserve-installed-wheel-support-libraries', [python, '-I', '-B',
+        tools/'copy_wheel_support_libs.py', wheel, package.parent, fixture/'src', out/'support-libraries.json'])
     run('distributable-full-original172', [python, '-I', '-B', tools/'run_original_suite.py',
                                          out/'original-tests', '--source-fixture', fixture], 175, fixture)
     run('distributable-original-and-installed-RECORD', [python, '-I', '-B', tools/'audit_wheel.py',
@@ -94,6 +96,7 @@ try:
               'raw': {'path': str(raw), 'sha256': before},
               'distributable': {'path': str(wheel), 'sha256': sha(wheel), 'bytes': wheel.stat().st_size},
               'native_payloads': payloads, 'consumer': str(python), 'GIL_override': False,
+              'support_libraries': json.loads((out/'support-libraries.json').read_text())['files'],
               'publication': 'Not uploaded by this qualification tool.'}
     (out/'RESULT.json').write_text(json.dumps(result, indent=2)+'\n')
     persist('PASSED_ALL_DECLARED_DISTRIBUTABLE_CHECKS')
