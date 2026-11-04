@@ -97,5 +97,22 @@ The workflow selects the newest stable free-threaded CPython, requests JIT,
 checks JIT when available and verifies natural GIL OFF with flags.gil=None.
 Five remote results, the release/publish job, protected-index readback and
 ordinary default-branch pip delivery are required before release acceptance.
-The current workflow supplies the platform validation portion; release
-automation remains an explicit open delivery task until implemented and run.
+
+The sixth job depends on all five successful platform validations. Its canonical
+version gate produces a successful validation-only marker for an unchanged-version
+push, without devpi authentication, artifact download for publication, upload or
+readback. Version changes and manual publication are restricted to the exact
+default branch. Publication verifies five distinct ABI-qualified wheels, one
+canonical source archive, their RECORD checksums and provenance, then installs
+the glibc wheel in a fresh consumer with the original-header C client and both
+real interpreter import orders.
+
+The canonical endpoint is ``https://devpi.stablekite.com/StableKite/index/``.
+``DEVPI_READ_TOKEN`` must be a separately authorized credential for authenticated
+collision checks and post-upload reads. ``DEVPI_TOKEN`` is confined to the upload
+step. Missing credentials, unconfirmed identity, version collisions, redirects,
+TLS failures or foreign URLs fail the job. Each upload receives one attempt;
+post-upload confirmation downloads all six files and compares the exact bytes.
+Offline failure controls never contact devpi. Implemented automation alone does
+not qualify a release: successful exact-head CI, actual protected-index readback
+and default-branch installation evidence remain required.

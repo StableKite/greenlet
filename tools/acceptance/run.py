@@ -41,6 +41,10 @@ def run(name, argv, limit=90, cwd=source):
     record.update(exit_code=process.returncode, stdout_sha256=digest(out/(name+'.stdout.log')),
         stderr_sha256=digest(out/(name+'.stderr.log')))
     persist('RUNNING')
+    if process.returncode:
+        for suffix in ('stdout', 'stderr'):
+            print('Failed stage raw log tail: '+name+'.'+suffix, file=sys.stderr)
+            print('\n'.join((out/(name+'.'+suffix+'.log')).read_text(errors='replace').splitlines()[-80:]), file=sys.stderr)
     assert process.returncode == 0, (name, process.returncode)
 
 try:
@@ -97,7 +101,7 @@ try:
     (out/'PUBLISH_ARTIFACTS.json').write_text(json.dumps({
         'status': 'QUALIFIED_ARTIFACTS_NOT_YET_PUBLISHED', 'version': expected,
         'git_head': os.environ.get('GITHUB_SHA'),
-        'files': {str(path.relative_to(out)): {'sha256': digest(path), 'bytes': path.stat().st_size}
+        'files': {path.relative_to(out).as_posix(): {'sha256': digest(path), 'bytes': path.stat().st_size}
                   for path in (distributable, sdist)}}, indent=2)+'\n')
     assert inputs == {name: digest(source/name) for name in inputs}
     (out/'ARTIFACTS_SHA256.json').write_text(json.dumps({path.name: {'bytes': path.stat().st_size,

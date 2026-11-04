@@ -35,6 +35,10 @@ def run(name, argv, timeout=90, cwd=None):
     record.update(exit_code=result.returncode, stdout_sha256=sha(out/(name+'.stdout.log')),
                   stderr_sha256=sha(out/(name+'.stderr.log')))
     persist('RUNNING')
+    if result.returncode:
+        for suffix in ('stdout', 'stderr'):
+            print('Failed ABI stage raw log tail: '+name+'.'+suffix, file=sys.stderr)
+            print('\n'.join((out/(name+'.'+suffix+'.log')).read_text(errors='replace').splitlines()[-80:]), file=sys.stderr)
     assert result.returncode == 0, (name, result.returncode)
 
 try:

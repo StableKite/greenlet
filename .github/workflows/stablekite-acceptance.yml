@@ -42,12 +42,83 @@ jobs:
       - if: runner.os == 'Linux'
         run: python -m pip install auditwheel==6.8.2 patchelf==0.19.3.0
       - run: python -I -B tools/acceptance/run.py . evidence
+      - name: Preserve original evidence without copying consumer environments
+        if: always()
+        run: python -I -B tools/acceptance/prepare_evidence.py evidence evidence-upload
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: acceptance-${{ matrix.target }}
-          path: evidence/
+          path: evidence-upload/
           if-no-files-found: error
+          include-hidden-files: true
+
+  publish:
+    name: Publish qualified five-platform set
+    needs: [native, musl]
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: greenlet-default-publication
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+          freethreaded: true
+          allow-prereleases: false
+          check-latest: true
+      - name: Release validation dependencies
+        run: python -m pip install --upgrade packaging requests
+      - name: Offline fail-closed publication controls
+        run: python -I -B tools/acceptance/test_release.py
+      - name: Canonical version and validation-only gate
+        id: release
+        run: python -I -B tools/acceptance/release.py plan . publication
+      - name: Validation-only success, no devpi access or republish
+        if: steps.release.outputs.should_publish != 'true'
+        run: python -c "import json; p=json.load(open('publication/PLAN.json')); assert p['should_publish'] is False; print('PASS_VALIDATION_ONLY_NO_REPUBLISH', p['previous_version'], p['current_version'])"
+      - name: Authenticated fail-closed read and collision check
+        if: steps.release.outputs.should_publish == 'true'
+        env:
+          DEVPI_READ_TOKEN: ${{ secrets.DEVPI_READ_TOKEN }}
+        run: python -I -B tools/acceptance/release.py collision . publication
+      - name: Upload tools, only for an authorized publication path
+        if: steps.release.outputs.should_publish == 'true'
+        run: python -m pip install --upgrade twine==7.0.0 setuptools
+      - name: Download the five exact-head platform artifacts for publication
+        if: steps.release.outputs.should_publish == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: acceptance-*
+          path: release-inputs
+          merge-multiple: false
+      - name: Exact publish set, original RECORD and dependency integration
+        if: steps.release.outputs.should_publish == 'true'
+        run: python -I -B tools/acceptance/release.py validate . publication --artifacts release-inputs
+      - name: Upload each qualified original once
+        if: steps.release.outputs.should_publish == 'true'
+        env:
+          DEVPI_TOKEN: ${{ secrets.DEVPI_TOKEN }}
+        run: python -I -B tools/acceptance/release.py upload . publication
+      - name: Authenticated post-upload metadata and exact server-byte confirmation
+        if: steps.release.outputs.should_publish == 'true'
+        env:
+          DEVPI_READ_TOKEN: ${{ secrets.DEVPI_READ_TOKEN }}
+        run: python -I -B tools/acceptance/release.py confirm . publication
+      - name: Preserve publication receipts and qualified originals
+        if: always()
+        run: python -I -B tools/acceptance/prepare_evidence.py publication publication-upload
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: publication-evidence
+          path: publication-upload/
+          if-no-files-found: error
+          include-hidden-files: true
 
   musl:
     name: ${{ matrix.target }}
@@ -77,9 +148,13 @@ jobs:
             --mount "type=bind,source=$PWD/evidence,target=/output" \
             python:3-alpine sh -ec \
             'apk add --no-cache build-base clang compiler-rt patchelf linux-headers nodejs npm; export CC=clang CXX=clang++; python -m pip install --upgrade uv; python /source/tools/acceptance/select_musl.py /output'
+      - name: Preserve original container evidence without dereferencing its SDK links
+        if: always()
+        run: python3 -I -B tools/acceptance/prepare_evidence.py evidence evidence-upload
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: acceptance-${{ matrix.target }}
-          path: evidence/
+          path: evidence-upload/
           if-no-files-found: error
+          include-hidden-files: true
