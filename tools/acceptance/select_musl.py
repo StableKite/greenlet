@@ -20,5 +20,6 @@ selected = max(matches, key=lambda item: tuple(map(int, item['version'].split('.
 (out/'SELECTED.json').write_text(json.dumps(selected, indent=2)+'\n')
 subprocess.run(['uv', 'venv', '--managed-python', '--python', selected['key'], '--seed', '/opt/greenlet-acceptance-env'], check=True)
 python = '/opt/greenlet-acceptance-env/bin/python'
-subprocess.run([python, '-m', 'pip', 'install', '--upgrade', 'build', 'setuptools', 'pyright==1.1.414'], check=True)
+subprocess.run([python, '-m', 'pip', 'install', '--upgrade', 'build', 'setuptools',
+                'pyright==1.1.414', 'auditwheel==6.8.2'], check=True)
 subprocess.run([python, '-I', '-B', '/source/tools/acceptance/run.py', '/source', str(out/'acceptance')], check=True)

@@ -88,6 +88,17 @@ try:
     run('real-failed-init-recovery', [sys.executable, '-I', '-B', tools/'check_failed_initialization.py', out/'failed-init', client], 90)
     run('real-suspended-child-teardown', [sys.executable, '-I', '-B', tools/'check_si_teardown.py', out/'suspended-teardown'], 50)
     run('pip-dependency-consistency', [sys.executable, '-m', 'pip', 'check'])
+    run('qualify-final-distributable-ABI-and-runtime', [sys.executable, '-I', '-B',
+        tools/'qualify_release_wheel.py', wheel, source, out/'qualified-release', client], 360)
+    qualified = json.loads((out/'qualified-release/RESULT.json').read_text())
+    assert qualified['status'] == 'PASS_ABI_DISTRIBUTABLE_RECORD_FULL_SUITE_AND_REAL_SI'
+    distributable = Path(qualified['distributable']['path'])
+    sdist, = (out/'distributions').glob('*.tar.gz')
+    (out/'PUBLISH_ARTIFACTS.json').write_text(json.dumps({
+        'status': 'QUALIFIED_ARTIFACTS_NOT_YET_PUBLISHED', 'version': expected,
+        'git_head': os.environ.get('GITHUB_SHA'),
+        'files': {str(path.relative_to(out)): {'sha256': digest(path), 'bytes': path.stat().st_size}
+                  for path in (distributable, sdist)}}, indent=2)+'\n')
     assert inputs == {name: digest(source/name) for name in inputs}
     (out/'ARTIFACTS_SHA256.json').write_text(json.dumps({path.name: {'bytes': path.stat().st_size,
         'sha256': digest(path)} for path in (out/'distributions').iterdir()}, indent=2)+'\n')

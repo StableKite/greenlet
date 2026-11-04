@@ -119,6 +119,12 @@ def fails_leakcheck_on_py314_or_less(func):
         return fails_leakcheck(func)
     return func
 
+def fails_leakcheck_on_legacy_gil(func):
+    """Require no leak on the corrected free-threaded finalizer path."""
+    if not sysconfig.get_config_var('Py_GIL_DISABLED'):
+        return fails_leakcheck_on_py314_or_less(func)
+    return func
+
 def fails_leakcheck_before_315t_fixes(func):
     """Require no leak on the CPython 3.15 free-threaded fixed path.
 
@@ -308,7 +314,7 @@ class _RefCountChecker(object):
         if len(deltas) >= 4 and sum(deltas[-4:]) == 0:
             return False
 
-        if len(deltas) >= 3 and deltas[-1] > 0 and deltas[-1] == deltas[-2] and deltas[-2] == deltas[-3]:
+        if len(deltas) >= 3 and 0 < deltas[-1] == deltas[-2] == deltas[-3]:
             diff = self._report_diff(growth)
             raise LeakCheckError('refcount increased by %r\n%s' % (deltas, diff))
 

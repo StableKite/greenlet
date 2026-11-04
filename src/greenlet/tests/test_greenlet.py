@@ -13,12 +13,9 @@ from . import TestCase
 from . import RUNNING_ON_MANYLINUX
 from . import PY313
 from . import PY314
-from . import WIN
 from . import RUNNING_ON_FREETHREAD_BUILD
 from .leakcheck import fails_leakcheck_before_315t_fixes
-from .leakcheck import fails_leakcheck_on_py314_or_less
 from .leakcheck import ignores_leakcheck
-from .leakcheck import ignores_leakcheck_if
 
 
 # We manually manage locks in many tests

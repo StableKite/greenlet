@@ -62,6 +62,13 @@ no leak. Separate complete suites on CPython 3.10, 3.11 and 3.12 qualify backwar
 compatibility, independently of CPython 3.15t acceptance. Original failing CI runs
 and native retained-frame crash controls are retained in the evidence archive.
 
+CPython 3.14 free-threaded builds do not export the collector's frame-stack
+visitors used by 3.15. While a 3.14 stack is suspended, deferred frame references
+therefore receive explicit owning pins and already owning frame references are
+visited directly. These pins move back to the running-thread domain on resume
+and are released after frame ownership is transferred on abandonment. This
+compatibility path is qualified separately from the newest-runtime policy.
+
 Acceptance boundaries
 ---------------------
 
@@ -81,7 +88,12 @@ that switch always returns the callable's final return type.
 
 The five-platform validation workflow preserves compiler outputs, original
 wheels/source distributions, RECORD checks, source hashes, command exit codes
-and raw logs. It selects the newest stable free-threaded CPython, requests JIT,
+and raw logs. Linux wheels receive measured auditwheel ABI tags, keeping the raw
+originals. A separate fresh environment installs each final distributable and
+checks all original tests, RECORD, real SI and parallel retained-frame readers.
+The qualified wheel and canonical source archive are recorded with SHA256 in
+PUBLISH_ARTIFACTS.json; this manifest does not claim a completed upload.
+The workflow selects the newest stable free-threaded CPython, requests JIT,
 checks JIT when available and verifies natural GIL OFF with flags.gil=None.
 Five remote results, the release/publish job, protected-index readback and
 ordinary default-branch pip delivery are required before release acceptance.

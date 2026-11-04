@@ -9,7 +9,7 @@ out.mkdir(exist_ok=False)
 fixture = out/'negative.py'
 fixture.write_text('from greenlet import greenlet, getcurrent, settrace\nsettrace("invalid")\ngreenlet(run=7)\ngetcurrent().gr_context = 9\n')
 config = out/'pyrightconfig.json'
-config.write_text(json.dumps({'include': [str(fixture.resolve())], 'typeCheckingMode': 'strict', 'pythonVersion': '3.15'}))
+config.write_text(json.dumps({'include': [fixture.name], 'typeCheckingMode': 'strict', 'pythonVersion': '3.15'}))
 argv = [sys.executable, '-m', 'pyright', '--project', str(config), '--pythonpath', sys.executable, '--outputjson']
 run = subprocess.run(argv, capture_output=True, timeout=30)
 (out/'pyright.stdout.json').write_bytes(run.stdout)

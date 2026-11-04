@@ -113,6 +113,25 @@ void PythonState::capture_c_stack_refs(const PyThreadState* tstate) noexcept
                 OwnedObject::owning(PyStackRef_AsPyObjectBorrow(node->ref)));
         }
     }
+#if !GREENLET_PY315
+    // 3.14 does not export the collector's deferred-stack visitor. Give
+    // suspended frame references real ownership instead. Only deferred refs
+    // need these extra pins; already owning refs are visited directly below.
+    for (_PyInterpreterFrame* frame = tstate->current_frame; frame; frame = frame->previous) {
+        if (frame->owner != FRAME_OWNED_BY_THREAD) { continue; }
+        auto pin = [this](_PyStackRef ref) {
+            if (!PyStackRef_IsNullOrInt(ref) && (ref.bits & Py_TAG_BITS)) {
+                this->c_stack_ref_snapshot.push_back(
+                    OwnedObject::owning(PyStackRef_AsPyObjectBorrow(ref)));
+            }
+        };
+        pin(frame->f_executable);
+        pin(frame->f_funcobj);
+        for (_PyStackRef* ref = frame->localsplus; ref < frame->stackpointer; ++ref) {
+            pin(*ref);
+        }
+    }
+#endif
 }
 #endif
 
@@ -445,6 +464,28 @@ int PythonState::tp_traverse(visitproc visit, void* arg, bool visit_top_frame) n
         }
     }
 #endif
+#if GREENLET_PY314 && !GREENLET_PY315 && defined(Py_GIL_DISABLED)
+    if (this->_top_frame) {
+        for (_PyInterpreterFrame* frame = this->_top_frame->f_frame;
+             frame; frame = frame->previous) {
+            if (frame->owner != FRAME_OWNED_BY_THREAD) { continue; }
+            Py_VISIT(frame->frame_obj);
+            Py_VISIT(frame->f_locals);
+            auto visit_owned = [visit, arg](_PyStackRef ref) {
+                return PyStackRef_IsNullOrInt(ref) || (ref.bits & Py_TAG_BITS)
+                    ? 0 : visit(PyStackRef_AsPyObjectBorrow(ref), arg);
+            };
+            int result = visit_owned(frame->f_executable);
+            if (result) { return result; }
+            result = visit_owned(frame->f_funcobj);
+            if (result) { return result; }
+            for (_PyStackRef* ref = frame->localsplus; ref < frame->stackpointer; ++ref) {
+                result = visit_owned(*ref);
+                if (result) { return result; }
+            }
+        }
+    }
+#endif
 #if GREENLET_PY314 && defined(Py_GIL_DISABLED)
     // Visit the objects this greenlet's C-stack refs were holding when it
     // suspended (captured by capture_c_stack_refs). The free-threaded collector
@@ -512,12 +553,13 @@ static void transfer_dead_frames(PyFrameObject* top) noexcept
             // Deferred stack references must become strong heap references.
             // An already owning reference moves without another INCREF.
             auto heap_safe = [](_PyStackRef reference) {
-#if GREENLET_PY315
                 if (PyStackRef_IsNullOrInt(reference)) { return reference; }
+#if GREENLET_PY315
+                const bool owns_reference = PyStackRef_RefcountOnObject(reference);
 #else
-                if (PyStackRef_IsNull(reference)) { return reference; }
+                const bool owns_reference = (reference.bits & Py_TAG_REFCNT) == 0;
 #endif
-                if (!PyStackRef_RefcountOnObject(reference)) {
+                if (!owns_reference) {
                     PyObject* value = PyStackRef_AsPyObjectBorrow(reference);
                     Py_INCREF(value);
                     reference.bits = reinterpret_cast<uintptr_t>(value);
@@ -530,9 +572,7 @@ static void transfer_dead_frames(PyFrameObject* top) noexcept
                 owned->localsplus[index] = heap_safe(owned->localsplus[index]);
             }
             owned->stackpointer = owned->localsplus + count;
-#if GREENLET_PY315
             owned->visited = 0;
-#endif
 #endif
             owned->owner = FRAME_OWNED_BY_FRAME_OBJECT;
             owned->previous = nullptr;
