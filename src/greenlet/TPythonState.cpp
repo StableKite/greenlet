@@ -465,6 +465,21 @@ int PythonState::tp_traverse(visitproc visit, void* arg, bool visit_top_frame) n
     return 0;
 }
 
+void PythonState::abandon_running_thread_state() noexcept
+{
+    this->_top_frame.relinquish_ownership();
+#if GREENLET_PY311
+    // These pointers were transferred to the running PyThreadState by >>.
+    // Only suspended greenlets own chunks that did_finish may free.
+    this->datastack_chunk = nullptr;
+    this->datastack_top = nullptr;
+    this->datastack_limit = nullptr;
+#endif
+#if GREENLET_PY314 && defined(Py_GIL_DISABLED)
+    this->c_stack_ref_snapshot.clear();
+#endif
+}
+
 void PythonState::tp_clear(bool own_top_frame) noexcept
 {
     PythonStateContext::tp_clear();

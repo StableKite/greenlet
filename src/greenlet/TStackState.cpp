@@ -25,6 +25,7 @@ std::ostream& operator<<(std::ostream& os, const StackState& s)
 
 StackState::StackState(void* mark, StackState& current)
     : _stack_start(nullptr),
+      _finished(false),
       stack_stop((char*)mark),
       stack_copy(nullptr),
       _stack_saved(0),
@@ -37,6 +38,7 @@ StackState::StackState(void* mark, StackState& current)
 
 StackState::StackState()
     : _stack_start(nullptr),
+      _finished(false),
       stack_stop(nullptr),
       stack_copy(nullptr),
       _stack_saved(0),
@@ -48,6 +50,7 @@ StackState::StackState(const StackState& other)
 // can't use a delegating constructor because of
 // MSVC for Python 2.7
     : _stack_start(nullptr),
+      _finished(false),
       stack_stop(nullptr),
       stack_copy(nullptr),
       _stack_saved(0),
@@ -69,6 +72,8 @@ StackState& StackState::operator=(const StackState& other)
     this->free_stack_copy();
 
     this->_stack_start = other._stack_start;
+    this->_finished.store(other._finished.load(std::memory_order_acquire),
+                          std::memory_order_release);
     this->stack_stop = other.stack_stop;
     this->stack_copy = other.stack_copy;
     this->_stack_saved = other._stack_saved;
@@ -166,6 +171,11 @@ inline bool StackState::started() const noexcept
     return this->stack_stop != nullptr;
 }
 
+inline bool StackState::finished() const noexcept
+{
+    return this->_finished.load(std::memory_order_acquire);
+}
+
 inline bool StackState::main() const noexcept
 {
     return this->stack_stop == (char*)-1;
@@ -198,6 +208,7 @@ inline void StackState::set_inactive() noexcept
     if (this->_stack_saved) {
         this->free_stack_copy();
     }
+    this->_finished.store(true, std::memory_order_release);
 }
 
 inline intptr_t StackState::stack_saved() const noexcept

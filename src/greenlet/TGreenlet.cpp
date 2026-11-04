@@ -499,6 +499,12 @@ Greenlet::g_calltrace(const OwnedObject& tracefunc,
     );
 }
 
+void Greenlet::abandon_running_thread_state() noexcept
+{
+    this->python_state.abandon_running_thread_state();
+    this->stack_state.set_inactive();
+}
+
 void
 Greenlet::murder_in_place()
 {
@@ -534,12 +540,8 @@ Greenlet::deactivate_and_free()
 bool
 Greenlet::belongs_to_thread(const ThreadState* thread_state) const
 {
-    if (!this->thread_state() // not running anywhere, or thread
-                              // exited
-        || !thread_state) { // same, or there is no thread state.
-        return false;
-    }
-    return true;
+    const ThreadState* const owner = this->thread_state();
+    return owner != nullptr && owner == thread_state;
 }
 
 

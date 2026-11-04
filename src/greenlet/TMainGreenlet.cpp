@@ -18,15 +18,6 @@
 #include <atomic>
 #endif
 
-// Incremented when we create a main greenlet, in a new thread, decremented
-// when it is destroyed.
-#ifdef Py_GIL_DISABLED
-static std::atomic<Py_ssize_t> G_TOTAL_MAIN_GREENLETS(0);
-#else
-// Protected by the GIL.
-static Py_ssize_t G_TOTAL_MAIN_GREENLETS;
-#endif
-
 namespace greenlet {
 greenlet::PythonAllocator<MainGreenlet> MainGreenlet::allocator;
 
@@ -46,14 +37,15 @@ void MainGreenlet::operator delete(void* ptr)
 MainGreenlet::MainGreenlet(PyGreenlet* p, ThreadState* state)
     : Greenlet(p, StackState::make_main()),
       _self(p),
+      _globals(mod_globs->shared_from_this()),
       _thread_state(state)
 {
-    G_TOTAL_MAIN_GREENLETS++;
+    ++this->_globals->total_main_greenlets;
 }
 
 MainGreenlet::~MainGreenlet()
 {
-    G_TOTAL_MAIN_GREENLETS--;
+    --this->_globals->total_main_greenlets;
     this->tp_clear();
 }
 

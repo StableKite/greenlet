@@ -125,7 +125,7 @@ static PyGetSetDef green_unswitchable_getsets[] = {
     {.name=nullptr}
 };
 
-PyTypeObject PyGreenletUnswitchable_Type = {
+PyTypeObject PyGreenletUnswitchable_MainType = {
     .ob_base = PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name = "greenlet._greenlet.UnswitchableGreenlet",
     .tp_dealloc = (destructor)green_dealloc,
@@ -135,7 +135,7 @@ PyTypeObject PyGreenletUnswitchable_Type = {
     .tp_clear = (inquiry)green_clear,
 
     .tp_getset = green_unswitchable_getsets,
-    .tp_base = &PyGreenlet_Type,
+    .tp_base = &PyGreenlet_MainType,
     .tp_init = (initproc)green_init,
     .tp_alloc = PyType_GenericAlloc,
     .tp_new = (newfunc)green_unswitchable_new,
@@ -145,6 +145,30 @@ PyTypeObject PyGreenletUnswitchable_Type = {
     .tp_is_gc = (inquiry)green_is_gc,
 #endif
 };
+
+static PyTypeObject* create_unswitchable_type(PyObject* module, PyTypeObject* base)
+{
+    static PyType_Slot slots[] = {
+        {Py_tp_dealloc, (void*)green_dealloc},
+        {Py_tp_doc, (void*)"Undocumented internal class for testing error conditions"},
+        {Py_tp_traverse, (void*)green_traverse},
+        {Py_tp_clear, (void*)green_clear},
+        {Py_tp_getset, (void*)green_unswitchable_getsets},
+        {Py_tp_init, (void*)green_init},
+        {Py_tp_alloc, (void*)PyType_GenericAlloc},
+        {Py_tp_new, (void*)green_unswitchable_new},
+        {Py_tp_free, (void*)PyObject_GC_Del},
+#ifndef Py_GIL_DISABLED
+        {Py_tp_is_gc, (void*)green_is_gc},
+#endif
+        {0, nullptr}
+    };
+    PyType_Spec spec = {"greenlet._greenlet.UnswitchableGreenlet", sizeof(PyGreenlet), 0,
+        G_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_IMMUTABLETYPE, slots};
+    NewReference bases(Require(PyTuple_Pack(1, base)));
+    return reinterpret_cast<PyTypeObject*>(PyType_FromModuleAndSpec(module, &spec, bases.borrow()));
+}
+
 
 
 #endif

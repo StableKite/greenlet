@@ -15,7 +15,7 @@ from . import PY313
 from . import PY314
 from . import WIN
 from . import RUNNING_ON_FREETHREAD_BUILD
-from .leakcheck import fails_leakcheck
+from .leakcheck import fails_leakcheck_before_315t_fixes
 from .leakcheck import fails_leakcheck_on_py314_or_less
 from .leakcheck import ignores_leakcheck
 from .leakcheck import ignores_leakcheck_if
@@ -578,7 +578,7 @@ class TestGreenlet(TestCase):
     def test_throw_to_dead_thread_doesnt_crash_wait(self):
         self._do_test_throw_to_dead_thread_doesnt_crash(True)
 
-    @fails_leakcheck
+    @fails_leakcheck_before_315t_fixes
     def test_recursive_startup(self):
         class convoluted(RawGreenlet):
             def __init__(self):
@@ -801,6 +801,10 @@ class TestGreenlet(TestCase):
             Greenlet(greenlet_main).switch()
 
         del self.glets
+        # Heap-type instance references use per-thread counters on 3.15t.
+        # Merge them before comparing the visible reference count.
+        if sys.version_info[:2] == (3, 15) and RUNNING_ON_FREETHREAD_BUILD:
+            gc.collect()
         if RUNNING_ON_FREETHREAD_BUILD:
             # Free-threaded builds make types immortal, which gives us
             # weird numbers here, and we actually do APPEAR to end

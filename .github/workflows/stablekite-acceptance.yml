@@ -1,0 +1,83 @@
+name: StableKite five-platform native interpreter acceptance
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_JIT: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
+  PYTHONFAULTHANDLER: '1'
+  GREENLET_STATIC_RUNTIME: '1'
+
+jobs:
+  native:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x86_64
+            runner: windows-latest
+          - target: glibc-x86_64
+            runner: ubuntu-24.04
+          - target: glibc-aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+          freethreaded: true
+          allow-prereleases: false
+          check-latest: true
+      - run: python -m pip install --upgrade build setuptools pyright==1.1.414
+      - run: python -I -B tools/acceptance/run.py . evidence
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: acceptance-${{ matrix.target }}
+          path: evidence/
+          if-no-files-found: error
+
+  musl:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: musl-x86_64
+            runner: ubuntu-24.04
+          - target: musl-aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Native musl runtime inventory, source build and full acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir evidence
+          docker pull python:3-alpine
+          docker image inspect python:3-alpine > evidence/container-image.json
+          docker run --rm --cpus 2 --memory 4g \
+            --env PYTHON_JIT=1 --env PYTHONDONTWRITEBYTECODE=1 --env PYTHONFAULTHANDLER=1 \
+            --mount "type=bind,source=$PWD,target=/source,readonly" \
+            --mount "type=bind,source=$PWD/evidence,target=/output" \
+            python:3-alpine sh -ec \
+            'apk add --no-cache build-base linux-headers nodejs npm; python -m pip install --upgrade uv; python /source/tools/acceptance/select_musl.py /output'
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: acceptance-${{ matrix.target }}
+          path: evidence/
+          if-no-files-found: error

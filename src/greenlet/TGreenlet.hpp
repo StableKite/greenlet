@@ -8,6 +8,7 @@
 #include <Python.h>
 
 #include <atomic>
+#include <memory>
 #include <vector>
 
 #include "greenlet_compiler_compat.hpp"
@@ -199,6 +200,7 @@ namespace greenlet
 
         int tp_traverse(visitproc visit, void* arg, bool visit_top_frame) noexcept;
         void tp_clear(bool own_top_frame) noexcept;
+        void abandon_running_thread_state() noexcept;
         void set_initial_state(const PyThreadState* const tstate) noexcept;
 #if GREENLET_USE_CFRAME
         void set_new_cframe(_PyCFrame& frame) noexcept;
@@ -220,6 +222,8 @@ namespace greenlet
         // object small)
     private:
         char* _stack_start;
+        // Public completion is independent of the transient native bootstrap state.
+        std::atomic<bool> _finished;
         char* stack_stop;
         char* stack_copy;
         intptr_t _stack_saved;
@@ -243,6 +247,7 @@ namespace greenlet
         inline void copy_heap_to_stack(const StackState& current) noexcept;
         inline int copy_stack_to_heap(char* const stackref, const StackState& current) noexcept;
         inline bool started() const noexcept;
+        inline bool finished() const noexcept;
         inline bool main() const noexcept;
         inline bool active() const noexcept;
         inline void set_active() noexcept;
@@ -448,6 +453,7 @@ namespace greenlet
          * This losses access to the thread state and the main greenlet.
          */
         virtual void murder_in_place();
+        void abandon_running_thread_state() noexcept;
 
         /**
          * Called when somebody notices we were running in a dead
@@ -490,6 +496,10 @@ namespace greenlet
         inline bool started() const
         {
             return this->stack_state.started();
+        }
+        inline bool finished() const noexcept
+        {
+            return this->stack_state.finished();
         }
         inline bool active() const
         {
@@ -788,11 +798,14 @@ public:
 
     };
 
+    class GreenletGlobals;
+
     class MainGreenlet : public Greenlet
     {
     private:
         static greenlet::PythonAllocator<MainGreenlet> allocator;
         refs::BorrowedMainGreenlet _self;
+        std::shared_ptr<GreenletGlobals> _globals;
         std::atomic<ThreadState*> _thread_state;
         G_NO_COPIES_OF_CLS(MainGreenlet);
     public:

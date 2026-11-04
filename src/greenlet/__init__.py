@@ -22,7 +22,7 @@ __all__ = [
 ###
 # Metadata
 ###
-__version__ = '3.5.7.dev0'
+__version__ = '3.5.7.dev1+stablekite.1'
 from ._greenlet import _C_API # pylint:disable=no-name-in-module
 
 ###
@@ -49,14 +49,14 @@ from ._greenlet import settrace
 # In 1.0, USE_GC and USE_TRACING are always true, and USE_CONTEXT_VARS
 # is the same as ``sys.version_info[:2] >= 3.7``
 ###
-from ._greenlet import GREENLET_USE_CONTEXT_VARS # pylint:disable=unused-import
-from ._greenlet import GREENLET_USE_GC # pylint:disable=unused-import
-from ._greenlet import GREENLET_USE_TRACING # pylint:disable=unused-import
+from ._greenlet import GREENLET_USE_CONTEXT_VARS as GREENLET_USE_CONTEXT_VARS # pylint:disable=unused-import
+from ._greenlet import GREENLET_USE_GC as GREENLET_USE_GC # pylint:disable=unused-import
+from ._greenlet import GREENLET_USE_TRACING as GREENLET_USE_TRACING # pylint:disable=unused-import
 
 # Controlling the use of the gc module. Provisional API for this greenlet
 # implementation in 2.0.
-from ._greenlet import CLOCKS_PER_SEC # pylint:disable=unused-import
-from ._greenlet import enable_optional_cleanup # pylint:disable=unused-import
-from ._greenlet import get_clocks_used_doing_optional_cleanup # pylint:disable=unused-import
+from ._greenlet import CLOCKS_PER_SEC as CLOCKS_PER_SEC # pylint:disable=unused-import
+from ._greenlet import enable_optional_cleanup as enable_optional_cleanup # pylint:disable=unused-import
+from ._greenlet import get_clocks_used_doing_optional_cleanup as get_clocks_used_doing_optional_cleanup # pylint:disable=unused-import
 
 # Other APIS in the _greenlet module are for test support.

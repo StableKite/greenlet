@@ -1,105 +1,102 @@
 #ifndef GREENLET_THREAD_STATE_CREATOR_HPP
 #define GREENLET_THREAD_STATE_CREATOR_HPP
 
-#include <ctime>
-#include <stdexcept>
-
-#include "greenlet_internal.hpp"
-#include "greenlet_refs.hpp"
-#include "greenlet_thread_support.hpp"
-
+#include "TGreenletGlobals.cpp"
 #include "TThreadState.hpp"
 
 namespace greenlet {
-
-
-typedef void (*ThreadStateDestructor)(ThreadState* const);
-
-// Only one of these, auto created per thread as a thread_local.
-// This means we don't have to worry about atomic access to the
-// internals, because by definition all access is happening on a
-// single thread.
-// Constructing the state constructs the MainGreenlet.
-template<ThreadStateDestructor Destructor>
-class ThreadStateCreator
-{
-private:
-    // Initialized to 1, and, if still 1, created on access.
-    // Set to 0 on destruction.
-    ThreadState* _state;
+class ThreadStateCreator {
+    struct Entry {
+        std::shared_ptr<GreenletGlobals> owner;
+        std::shared_ptr<ThreadStateHandle> handle;
+    };
+    std::vector<Entry> entries;
+    bool draining = false;
     G_NO_COPIES_OF_CLS(ThreadStateCreator);
-
-    inline bool has_initialized_state() const noexcept
-    {
-        return this->_state != (ThreadState*)1;
-    }
-
-    inline bool has_state() const noexcept
-    {
-        return this->has_initialized_state() && this->_state != nullptr;
-    }
-
 public:
-
-    ThreadStateCreator() :
-        _state((ThreadState*)1)
-    {
-    }
-
+    ThreadStateCreator() = default;
     ~ThreadStateCreator()
     {
-        if (this->has_state()) {
-            Destructor(this->_state);
+        for (auto& entry : entries) {
+            MarkThreadStateDead(entry.owner, entry.handle);
         }
-
-        this->_state = nullptr;
     }
 
-    inline ThreadState& state()
+    ThreadState& state()
     {
-        // The main greenlet will own this pointer when it is created,
-        // which will be right after this. The plan is to give every
-        // greenlet a pointer to the main greenlet for the thread it
-        // runs in; if we are doing something cross-thread, we need to
-        // access the pointer from the main greenlet. Deleting the
-        // thread, and hence the thread-local storage, will delete the
-        // state pointer in the main greenlet.
-        if (!this->has_initialized_state()) {
-            // XXX: Assuming allocation never fails
-            this->_state = new ThreadState;
-            // For non-standard threading, we need to store an object
-            // in the Python thread state dictionary so that it can be
-            // DECREF'd when the thread ends (ideally; the dict could
-            // last longer) and clean this object up.
+        GreenletGlobals* globals = GetGlobals();
+        if (!globals || globals->closing.load() || !globals->ready) {
+            throw PyErrOccurred(PyExc_RuntimeError, "greenlet interpreter context is unavailable");
         }
-        if (!this->_state) {
-            throw std::runtime_error("Accessing state after destruction.");
+        Entry* found = nullptr;
+        for (auto it = entries.begin(); it != entries.end();) {
+            if (it->owner->closing.load()) {
+                it = entries.erase(it);
+                continue;
+            }
+            if (it->owner.get() == globals && it->owner->generation == globals->generation) {
+                found = &*it;
+            }
+            ++it;
         }
-        return *this->_state;
+        if (!found) {
+            auto owner = globals->shared_from_this();
+            auto handle = std::make_shared<ThreadStateHandle>();
+            entries.push_back({owner, handle});
+            try {
+                {
+                    LockGuard lock(owner->cleanup_mutex);
+                    owner->handles.push_back(handle);
+                }
+                ThreadState* state = new ThreadState(owner);
+                handle->state.store(state, std::memory_order_release);
+                handle->constructing.store(false, std::memory_order_release);
+            }
+            catch (...) {
+                handle->constructing.store(false, std::memory_order_release);
+                {
+                    LockGuard lock(owner->cleanup_mutex);
+                    auto it = std::find(owner->handles.begin(), owner->handles.end(), handle);
+                    if (it != owner->handles.end()) {
+                        owner->handles.erase(it);
+                    }
+                }
+                entries.pop_back();
+                throw;
+            }
+            found = &entries.back();
+        }
+        ThreadState* state = found->handle->state.load(std::memory_order_acquire);
+        if (!state) {
+            throw PyErrOccurred(PyExc_RuntimeError, "recursive greenlet thread-state initialization");
+        }
+        if (!draining) {
+            draining = true;
+            try {
+                DrainDeadThreadStates(globals);
+            }
+            catch (...) {
+                draining = false;
+                throw;
+            }
+            draining = false;
+        }
+        return *state;
     }
 
-    operator ThreadState&()
+    operator ThreadState&() { return state(); }
+    operator ThreadState*() { return &state(); }
+    int tp_traverse(visitproc visit, void* arg)
     {
-        return this->state();
-    }
-
-    operator ThreadState*()
-    {
-        return &this->state();
-    }
-
-    inline int tp_traverse(visitproc visit, void* arg)
-    {
-        if (this->has_state()) {
-            return this->_state->tp_traverse(visit, arg);
+        GreenletGlobals* globals = GetGlobals();
+        for (auto& entry : entries) {
+            if (entry.owner.get() == globals) {
+                ThreadState* state = entry.handle->state.load();
+                return state ? state->tp_traverse(visit, arg) : 0;
+            }
         }
         return 0;
     }
-
 };
-
-
-
-}; // namespace greenlet
-
+} // namespace greenlet
 #endif

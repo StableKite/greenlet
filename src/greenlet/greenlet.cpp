@@ -205,22 +205,38 @@ static void GREENLET_NOINLINE(slp_restore_state_trampoline)()
 
 
 
-static PyObject*
-greenlet_internal_mod_init() noexcept
+static int
+greenlet_internal_mod_exec(PyObject* module) noexcept
 {
-    static void* _PyGreenlet_API[PyGreenlet_API_pointers];
+    std::shared_ptr<greenlet::GreenletGlobals> globals;
 
     try {
-        CreatedModule m(greenlet_module_def);
-
-        Require(PyType_Ready(&PyGreenlet_Type));
-        Require(PyType_Ready(&PyGreenletUnswitchable_Type));
-
-        mod_globs = new greenlet::GreenletGlobals;
+        CreatedModule m(module);
+        globals = greenlet::GetOrCreateGlobals();
+        auto* state = static_cast<GreenletModuleState*>(PyModule_GetState(module));
+        PyObject* anchor = greenlet::GetContextAnchor(globals);
+        Py_INCREF(anchor);
+        Py_XSETREF(state->context_anchor, anchor);
+        void** _PyGreenlet_API = globals->c_api;
+        const bool initialize_context = !globals->ready;
+        if (initialize_context) {
+        const bool main_interpreter = PyInterpreterState_GetID(
+            PyThreadState_GetInterpreter(PyThreadState_Get())) == 0;
+        if (main_interpreter) {
+            Require(PyType_Ready(&PyGreenlet_MainType));
+            Require(PyType_Ready(&PyGreenletUnswitchable_MainType));
+            globals->greenlet_type = reinterpret_cast<PyObject*>(&PyGreenlet_MainType);
+            globals->unswitchable_type = reinterpret_cast<PyObject*>(&PyGreenletUnswitchable_MainType);
+        }
+        else {
+            globals->greenlet_type = NewReference(Require((PyObject*)create_greenlet_type(m.borrow())));
+            globals->unswitchable_type = NewReference(Require((PyObject*)create_unswitchable_type(m.borrow(), &PyGreenlet_Type)));
+        }
         ThreadState::init();
+        }
 
-        m.PyAddObject("greenlet", PyGreenlet_Type);
-        m.PyAddObject("UnswitchableGreenlet", PyGreenletUnswitchable_Type);
+        m.PyAddObject("greenlet", globals->greenlet_type);
+        m.PyAddObject("UnswitchableGreenlet", globals->unswitchable_type);
         m.PyAddObject("error", mod_globs->PyExc_GreenletError);
         m.PyAddObject("GreenletExit", mod_globs->PyExc_GreenletExit);
 
@@ -237,7 +253,7 @@ greenlet_internal_mod_init() noexcept
         // confusing the class greenlet with the module greenlet; with
         // the exception of (possibly) ``getcurrent()``, this
         // shouldn't be encouraged so don't add new items here.
-        for (const char* const* p = copy_on_greentype; *p; p++) {
+        for (const char* const* p = copy_on_greentype; initialize_context && *p; p++) {
             OwnedObject o = m.PyRequireAttr(*p);
             Require(PyDict_SetItemString(PyGreenlet_Type.tp_dict, *p, o.borrow()));
         }
@@ -291,18 +307,23 @@ greenlet_internal_mod_init() noexcept
         //      << "\n\tPyGreenlet     : " << sizeof(PyGreenlet)
         //      << endl;
 
-#ifdef Py_GIL_DISABLED
-        PyUnstable_Module_SetGIL(m.borrow(), Py_MOD_GIL_NOT_USED);
-#endif
-
-        return m.borrow(); // But really it's the main reference.
+        globals->ready = true;
+        return 0;
     }
     catch (const LockInitError& e) {
         PyErr_SetString(PyExc_MemoryError, e.what());
-        return NULL;
+        return -1;
     }
     catch (const PyErrOccurred&) {
-        return NULL;
+        PyErrPieces error;
+        if (globals && !globals->ready) { globals->close(); }
+        error.PyErrRestore();
+        return -1;
+    }
+    catch (const std::bad_alloc&) {
+        if (globals && !globals->ready) { globals->close(); }
+        PyErr_NoMemory();
+        return -1;
     }
 
 }
@@ -312,7 +333,7 @@ extern "C" {
 PyMODINIT_FUNC
 PyInit__greenlet(void)
 {
-    return greenlet_internal_mod_init();
+    return PyModuleDef_Init(&greenlet_module_def);
 }
 
 }; // extern C

@@ -23,6 +23,7 @@
 # THE SOFTWARE.
 import os
 import sys
+import sysconfig
 import gc
 
 from functools import wraps
@@ -117,6 +118,16 @@ def fails_leakcheck_on_py314_or_less(func):
     if sys.version_info[:2] <= (3, 14):
         return fails_leakcheck(func)
     return func
+
+def fails_leakcheck_before_315t_fixes(func):
+    """Require no leak on the CPython 3.15 free-threaded fixed path.
+
+    Older runtime paths retain their existing expected-leak behavior.
+    This does not skip the test or turn off the leak checker.
+    """
+    if sys.version_info[:2] == (3, 15) and sysconfig.get_config_var('Py_GIL_DISABLED'):
+        return func
+    return fails_leakcheck(func)
 
 class LeakCheckError(AssertionError):
     pass
