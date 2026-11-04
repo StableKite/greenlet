@@ -15,7 +15,10 @@ struct _greenlet;
 struct _PyMainGreenlet;
 
 typedef struct _greenlet PyGreenlet;
-extern PyTypeObject PyGreenlet_Type;
+namespace greenlet { PyTypeObject* GetGreenletType() noexcept; }
+#ifndef PyGreenlet_Type
+#define PyGreenlet_Type (*greenlet::GetGreenletType())
+#endif
 
 
 #ifdef  GREENLET_USE_STDIO
@@ -27,6 +30,7 @@ using std::endl;
 namespace greenlet
 {
     class Greenlet;
+    bool IsCurrentInterpreterClosing() noexcept;
 
     static inline bool
     IsShuttingDown()
@@ -72,7 +76,7 @@ namespace greenlet
         // unloads loaded shared libraries, which as of 3.14 it never
         // does).
 
-        return Py_IsFinalizing();
+        return Py_IsFinalizing() || IsCurrentInterpreterClosing();
     }
 
     namespace refs
@@ -676,10 +680,22 @@ namespace greenlet {
         {
         }
 
+        // Historical name: these references now live in an owned interpreter
+        // context and must be released while that interpreter is attached.
         ImmortalObject(const ImmortalObject& other)
             : PyObjectPointer<>(other.p)
         {
+            Py_XINCREF(this->p);
+        }
 
+        ~ImmortalObject()
+        {
+            this->CLEAR();
+        }
+
+        void CLEAR() noexcept
+        {
+            Py_CLEAR(this->p);
         }
 
         /**
@@ -930,6 +946,8 @@ namespace greenlet {
             Require(PyModule_Create(&mod_def)))
         {
         }
+
+        explicit CreatedModule(PyObject* module) : PyObjectPointer<>(module) {}
 
         // PyAddObject(): Add a new reference to the object to the module.
         void PyAddObject(const char* name, const long new_bool)

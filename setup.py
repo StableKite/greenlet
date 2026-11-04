@@ -196,6 +196,7 @@ else:
 setup(
     package_dir={'': 'src'},
     packages=find_packages('src'),
+    package_data={'greenlet': ['*.pyi', 'py.typed']},
     headers=headers,
     ext_modules=ext_modules,
 )

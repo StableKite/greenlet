@@ -1,7 +1,7 @@
 
 from greenlet import greenlet
 from . import TestCase
-from .leakcheck import fails_leakcheck
+from .leakcheck import fails_leakcheck_without_ft_finalizer
 
 class genlet(greenlet):
     parent = None
@@ -131,7 +131,7 @@ class NestedGeneratorTests(TestCase):
             seen.append(ii)
         self.assertEqual(seen, [1, 1, 2, 4, 3, 9, 4, 16])
 
-    @fails_leakcheck
+    @fails_leakcheck_without_ft_finalizer
     def test_permutations(self):
         gen_perms = perms(list(range(4)))
         permutations = list(gen_perms)

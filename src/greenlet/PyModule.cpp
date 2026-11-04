@@ -26,12 +26,26 @@ PyDoc_STRVAR(mod_getcurrent_doc,
 
 static PyObject*
 mod_getcurrent(PyObject* UNUSED(module))
+try
 {
+    if (greenlet::IsShuttingDown() || !mod_globs) {
+        PyErr_SetString(PyExc_RuntimeError, "greenlet interpreter context is unavailable");
+        return nullptr;
+    }
+
     if (greenlet::IsShuttingDown()) {
         PyErr_SetString(PyExc_RuntimeError, "greenlet is being finalized");
         return nullptr;
     }
-    return GET_THREAD_STATE().state().get_current().relinquish_ownership_o();
+    ThreadState& state = GET_THREAD_STATE().state();
+    GET_THREAD_STATE().drain_dead_states();
+    return state.get_current().relinquish_ownership_o();
+}
+catch (const greenlet::PyErrOccurred&) {
+    return nullptr;
+}
+catch (const std::bad_alloc&) {
+    return PyErr_NoMemory();
 }
 
 PyDoc_STRVAR(mod_settrace_doc,
@@ -40,7 +54,13 @@ PyDoc_STRVAR(mod_settrace_doc,
              "Sets a new tracing function and returns the previous one.\n");
 static PyObject*
 mod_settrace(PyObject* UNUSED(module), PyObject* args)
+try
 {
+    if (greenlet::IsShuttingDown() || !mod_globs) {
+        PyErr_SetString(PyExc_RuntimeError, "greenlet interpreter context is unavailable");
+        return nullptr;
+    }
+
     PyArgParseParam tracefunc;
     if (!PyArg_ParseTuple(args, "O", &tracefunc)) {
         return NULL;
@@ -55,6 +75,12 @@ mod_settrace(PyObject* UNUSED(module), PyObject* args)
 
     return previous.relinquish_ownership();
 }
+catch (const greenlet::PyErrOccurred&) {
+    return nullptr;
+}
+catch (const std::bad_alloc&) {
+    return PyErr_NoMemory();
+}
 
 PyDoc_STRVAR(mod_gettrace_doc,
              "gettrace() -> object\n"
@@ -63,12 +89,24 @@ PyDoc_STRVAR(mod_gettrace_doc,
 
 static PyObject*
 mod_gettrace(PyObject* UNUSED(module))
+try
 {
+    if (greenlet::IsShuttingDown() || !mod_globs) {
+        PyErr_SetString(PyExc_RuntimeError, "greenlet interpreter context is unavailable");
+        return nullptr;
+    }
+
     OwnedObject tracefunc = GET_THREAD_STATE().state().get_tracefunc();
     if (!tracefunc) {
         tracefunc = Py_None;
     }
     return tracefunc.relinquish_ownership();
+}
+catch (const greenlet::PyErrOccurred&) {
+    return nullptr;
+}
+catch (const std::bad_alloc&) {
+    return PyErr_NoMemory();
 }
 
 
@@ -80,7 +118,13 @@ PyDoc_STRVAR(mod_set_thread_local_doc,
 
 static PyObject*
 mod_set_thread_local(PyObject* UNUSED(module), PyObject* args)
+try
 {
+    if (greenlet::IsShuttingDown() || !mod_globs) {
+        PyErr_SetString(PyExc_RuntimeError, "greenlet interpreter context is unavailable");
+        return nullptr;
+    }
+
     PyArgParseParam key;
     PyArgParseParam value;
     PyObject* result = NULL;
@@ -97,6 +141,12 @@ mod_set_thread_local(PyObject* UNUSED(module), PyObject* args)
     }
     return result;
 }
+catch (const greenlet::PyErrOccurred&) {
+    return nullptr;
+}
+catch (const std::bad_alloc&) {
+    return PyErr_NoMemory();
+}
 
 PyDoc_STRVAR(mod_get_pending_cleanup_count_doc,
              "get_pending_cleanup_count() -> Integer\n"
@@ -106,9 +156,21 @@ PyDoc_STRVAR(mod_get_pending_cleanup_count_doc,
 
 static PyObject*
 mod_get_pending_cleanup_count(PyObject* UNUSED(module))
+try
 {
+    if (greenlet::IsShuttingDown() || !mod_globs) {
+        PyErr_SetString(PyExc_RuntimeError, "greenlet interpreter context is unavailable");
+        return nullptr;
+    }
+
     LockGuard cleanup_lock(*mod_globs->thread_states_to_destroy_lock);
-    return PyLong_FromSize_t(mod_globs->thread_states_to_destroy.size());
+    return PyLong_FromSize_t(mod_globs->pending_count);
+}
+catch (const greenlet::PyErrOccurred&) {
+    return nullptr;
+}
+catch (const std::bad_alloc&) {
+    return PyErr_NoMemory();
 }
 
 PyDoc_STRVAR(mod_get_total_main_greenlets_doc,
@@ -118,8 +180,20 @@ PyDoc_STRVAR(mod_get_total_main_greenlets_doc,
 
 static PyObject*
 mod_get_total_main_greenlets(PyObject* UNUSED(module))
+try
 {
-    return PyLong_FromSize_t(G_TOTAL_MAIN_GREENLETS);
+    if (greenlet::IsShuttingDown() || !mod_globs) {
+        PyErr_SetString(PyExc_RuntimeError, "greenlet interpreter context is unavailable");
+        return nullptr;
+    }
+
+    return PyLong_FromSsize_t(mod_globs->total_main_greenlets.load());
+}
+catch (const greenlet::PyErrOccurred&) {
+    return nullptr;
+}
+catch (const std::bad_alloc&) {
+    return PyErr_NoMemory();
 }
 
 
@@ -148,7 +222,13 @@ PyDoc_STRVAR(mod_get_clocks_used_doing_optional_cleanup_doc,
              );
 static PyObject*
 mod_get_clocks_used_doing_optional_cleanup(PyObject* UNUSED(module))
+try
 {
+    if (greenlet::IsShuttingDown() || !mod_globs) {
+        PyErr_SetString(PyExc_RuntimeError, "greenlet interpreter context is unavailable");
+        return nullptr;
+    }
+
     std::clock_t clocks = ThreadState::clocks_used_doing_gc();
 
     if (clocks == std::clock_t(-1)) {
@@ -157,6 +237,12 @@ mod_get_clocks_used_doing_optional_cleanup(PyObject* UNUSED(module))
     // This might not actually work on some implementations; clock_t
     // is an opaque type.
     return PyLong_FromSsize_t(clocks);
+}
+catch (const greenlet::PyErrOccurred&) {
+    return nullptr;
+}
+catch (const std::bad_alloc&) {
+    return PyErr_NoMemory();
 }
 
 PyDoc_STRVAR(mod_enable_optional_cleanup_doc,
@@ -167,7 +253,13 @@ PyDoc_STRVAR(mod_enable_optional_cleanup_doc,
              );
 static PyObject*
 mod_enable_optional_cleanup(PyObject* UNUSED(module), PyObject* flag)
+try
 {
+    if (greenlet::IsShuttingDown() || !mod_globs) {
+        PyErr_SetString(PyExc_RuntimeError, "greenlet interpreter context is unavailable");
+        return nullptr;
+    }
+
     int is_true = PyObject_IsTrue(flag);
     if (is_true == -1) {
         return nullptr;
@@ -185,6 +277,12 @@ mod_enable_optional_cleanup(PyObject* UNUSED(module), PyObject* flag)
     }
     Py_RETURN_NONE;
 }
+catch (const greenlet::PyErrOccurred&) {
+    return nullptr;
+}
+catch (const std::bad_alloc&) {
+    return PyErr_NoMemory();
+}
 
 
 
@@ -196,7 +294,13 @@ PyDoc_STRVAR(mod_get_tstate_trash_delete_nesting_doc,
              "Return the 'trash can' nesting level. Testing only.\n");
 static PyObject*
 mod_get_tstate_trash_delete_nesting(PyObject* UNUSED(module))
+try
 {
+    if (greenlet::IsShuttingDown() || !mod_globs) {
+        PyErr_SetString(PyExc_RuntimeError, "greenlet interpreter context is unavailable");
+        return nullptr;
+    }
+
     PyThreadState* tstate = PyThreadState_GET();
 
 #if GREENLET_PY312
@@ -204,6 +308,12 @@ mod_get_tstate_trash_delete_nesting(PyObject* UNUSED(module))
 #else
     return PyLong_FromLong(tstate->trash_delete_nesting);
 #endif
+}
+catch (const greenlet::PyErrOccurred&) {
+    return nullptr;
+}
+catch (const std::bad_alloc&) {
+    return PyErr_NoMemory();
 }
 #endif
 
@@ -279,12 +389,56 @@ static const char* const copy_on_greentype[] = {
     NULL
 };
 
+struct GreenletModuleState {
+    PyObject* context_anchor;
+};
+
+static int greenlet_internal_mod_exec(PyObject* module) noexcept;
+
+static int greenlet_module_traverse(PyObject* module, visitproc visit, void* arg)
+{
+    auto* state = static_cast<GreenletModuleState*>(PyModule_GetState(module));
+    if (state) {
+        Py_VISIT(state->context_anchor);
+    }
+    return 0;
+}
+
+static int greenlet_module_clear(PyObject* module)
+{
+    auto* state = static_cast<GreenletModuleState*>(PyModule_GetState(module));
+    if (state) {
+        Py_CLEAR(state->context_anchor);
+    }
+    return 0;
+}
+
+static void greenlet_module_free(void* module)
+{
+    greenlet_module_clear(static_cast<PyObject*>(module));
+}
+
+static PyModuleDef_Slot greenlet_slots[] = {
+    {Py_mod_exec, (void*)greenlet_internal_mod_exec},
+#if GREENLET_PY312
+    {Py_mod_multiple_interpreters, Py_MOD_PER_INTERPRETER_GIL_SUPPORTED},
+#endif
+#if GREENLET_PY313
+    {Py_mod_gil, Py_MOD_GIL_NOT_USED},
+#endif
+    {0, nullptr}
+};
+
 static struct PyModuleDef greenlet_module_def = {
     .m_base=PyModuleDef_HEAD_INIT,
     .m_name="greenlet._greenlet",
     .m_doc=NULL,
-    .m_size=-1,
+    .m_size=sizeof(GreenletModuleState),
     .m_methods=GreenMethods,
+    .m_slots=greenlet_slots,
+    .m_traverse=greenlet_module_traverse,
+    .m_clear=greenlet_module_clear,
+    .m_free=greenlet_module_free,
 };
 
 

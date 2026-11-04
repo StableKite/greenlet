@@ -13,12 +13,9 @@ from . import TestCase
 from . import RUNNING_ON_MANYLINUX
 from . import PY313
 from . import PY314
-from . import WIN
 from . import RUNNING_ON_FREETHREAD_BUILD
-from .leakcheck import fails_leakcheck
-from .leakcheck import fails_leakcheck_on_py314_or_less
+from .leakcheck import fails_leakcheck_without_ft_finalizer
 from .leakcheck import ignores_leakcheck
-from .leakcheck import ignores_leakcheck_if
 
 
 # We manually manage locks in many tests
@@ -509,7 +506,6 @@ class TestGreenlet(TestCase):
         g = mygreenlet(lambda: None)
         self.assertRaises(SomeError, g.throw, SomeError())
 
-    @fails_leakcheck_on_py314_or_less
     def _do_test_throw_to_dead_thread_doesnt_crash(self, wait_for_cleanup=False):
         result = []
         def worker():
@@ -563,22 +559,13 @@ class TestGreenlet(TestCase):
         del creator
         worker = None
         del result[:]
-        # XXX: we ought to be able to automatically fix this.
-        # See issue 252
-        self.expect_greenlet_leak = True # direct us not to wait for it to go away
-
-    @fails_leakcheck_on_py314_or_less
-    @ignores_leakcheck_if(
-        WIN and sys.version_info[:2] == (3, 10),
-        "does not leaks on Windows 3.10, but does on other platforms"
-    )
     def test_throw_to_dead_thread_doesnt_crash(self):
         self._do_test_throw_to_dead_thread_doesnt_crash()
 
     def test_throw_to_dead_thread_doesnt_crash_wait(self):
         self._do_test_throw_to_dead_thread_doesnt_crash(True)
 
-    @fails_leakcheck
+    @fails_leakcheck_without_ft_finalizer
     def test_recursive_startup(self):
         class convoluted(RawGreenlet):
             def __init__(self):
@@ -801,6 +788,10 @@ class TestGreenlet(TestCase):
             Greenlet(greenlet_main).switch()
 
         del self.glets
+        # Heap-type instance references use per-thread counters on 3.15t.
+        # Merge them before comparing the visible reference count.
+        if sys.version_info[:2] == (3, 15) and RUNNING_ON_FREETHREAD_BUILD:
+            gc.collect()
         if RUNNING_ON_FREETHREAD_BUILD:
             # Free-threaded builds make types immortal, which gives us
             # weird numbers here, and we actually do APPEAR to end

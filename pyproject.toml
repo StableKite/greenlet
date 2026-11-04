@@ -6,6 +6,7 @@ requires = [
 
 [project]
 name = "greenlet"
+version = "3.5.7.dev1+stablekite.1"
 description = "Lightweight in-process concurrent programming"
 readme = "README.rst"
 authors = [
@@ -43,7 +44,6 @@ keywords = [
     "cooperative",
 ]
 requires-python = ">=3.10"
-dynamic = ["version"]
 
 [project.urls]
 Homepage = "https://greenlet.readthedocs.io"
@@ -62,9 +62,6 @@ test = [
     "psutil",
     "setuptools",
 ]
-
-[tool.setuptools.dynamic]
-version = {attr = "greenlet.__version__"}
 
 [tool.zest-releaser]
 python-file-with-version = "src/greenlet/__init__.py"

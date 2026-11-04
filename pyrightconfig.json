@@ -1,0 +1,5 @@
+{
+  "include": ["src/greenlet/__init__.py", "src/greenlet/platform/__init__.py", "src/greenlet/_greenlet.pyi", "tools/acceptance/typing_consumer.py"],
+  "typeCheckingMode": "strict",
+  "pythonVersion": "3.15"
+}

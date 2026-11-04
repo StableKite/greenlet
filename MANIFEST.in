@@ -2,6 +2,8 @@
 # Source code
 ###
 recursive-include src *.py
+recursive-include src *.pyi
+recursive-include src py.typed
 recursive-include src *.c
 recursive-include src *.cpp
 recursive-include src *.hpp
@@ -43,6 +45,8 @@ recursive-include appveyor *.ps1
 recursive-include appveyor *.py
 
 recursive-include .github *.yml
+recursive-include tools/acceptance *.py *.c
+include pyrightconfig.json
 
 include AUTHORS
 include LICENSE

@@ -2,11 +2,18 @@
  Changes
 =========
 
-3.5.7 (unreleased)
-==================
+3.5.7.dev1+stablekite.1 (engineering candidate)
+============================================
 
-- Nothing changed yet.
-
+- Implement interpreter-owned state and multi-phase initialization. Main
+  interpreter static types retain the established C subclass ABI; child
+  interpreters own separate heap types and cleanup registries.
+- Correct free-threaded stack publication, GC/finalizer ownership and native
+  thread-exit cleanup. Keep legitimate C-owned references alive during GC.
+- Add public native API annotations and packaged PEP 561 metadata.
+- Add reproducible original-suite, real subinterpreter, C API, allocation-failure
+  recovery and suspended-stack teardown evidence. Publication and platform
+  acceptance are separate gates; this development version is not a final release.
 
 3.5.6 (2026-09-14)
 ==================

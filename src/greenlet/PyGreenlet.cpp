@@ -50,24 +50,48 @@ using greenlet::PythonState;
 using greenlet::refs::PyCriticalObjectSection;
 
 
+static void green_dealloc(PyGreenlet* self);
+
+// subtype_dealloc releases the instance class when its native base is static.
+// A heap native base must release that reference itself, exactly once.
+static bool green_deallocator_owns_type(PyTypeObject* type) noexcept
+{
+    for (PyTypeObject* base = type; base; base = base->tp_base) {
+        if (base->tp_dealloc == reinterpret_cast<destructor>(green_dealloc)) {
+            return PyType_HasFeature(base, Py_TPFLAGS_HEAPTYPE);
+        }
+    }
+    return false;
+}
+
 static PyGreenlet*
 green_new(PyTypeObject* type, PyObject* UNUSED(args), PyObject* UNUSED(kwds))
 {
-    PyGreenlet* o =
-        (PyGreenlet*)PyBaseObject_Type.tp_new(type, mod_globs->empty_tuple, mod_globs->empty_dict);
-    if (o) {
-        // Recall: borrowing or getting the current greenlet
-        // causes the "deleteme list" to get cleared. So constructing a greenlet
-        // can do things like cause other greenlets to get finalized.
-        UserGreenlet* c = new UserGreenlet(o, GET_THREAD_STATE().state().borrow_current());
-        assert(Py_REFCNT(o) == 1);
-        // Also: This looks like a memory leak, but isn't.
-        // Constructing the C++ object assigns it to the pimpl pointer
-        // of the Python object (o); we'll need that later.
-        assert(c == o->pimpl);
+    if (greenlet::IsShuttingDown()) {
+        PyErr_SetString(PyExc_RuntimeError, "greenlet is being finalized");
+        return nullptr;
     }
-    return o;
+    PyGreenlet* object = nullptr;
+    try {
+        object = (PyGreenlet*)PyBaseObject_Type.tp_new(type, mod_globs->empty_tuple, mod_globs->empty_dict);
+        if (object) {
+            new UserGreenlet(object, GET_THREAD_STATE().state().borrow_current());
+        }
+        return object;
+    }
+    catch (const PyErrOccurred&) {
+        PyErrPieces error;
+        Py_XDECREF(object);
+        error.PyErrRestore();
+        return nullptr;
+    }
+    catch (const std::bad_alloc&) {
+        Py_XDECREF(object);
+        PyErr_NoMemory();
+        return nullptr;
+    }
 }
+
 
 
 // green_init is used in the tp_init slot. So it's important that
@@ -126,6 +150,9 @@ green_traverse(PyGreenlet* self, visitproc visit, void* arg)
     //    the frame object. Doing so, while always allowing GC on a
     //    greenlet, solves several leaks for us.
 
+    if (green_deallocator_owns_type(Py_TYPE(self))) {
+        Py_VISIT(Py_TYPE(self));
+    }
     Py_VISIT(self->dict);
     if (!self->pimpl) {
         // Hmm. I have seen this at interpreter shutdown time,
@@ -180,7 +207,7 @@ green_clear(PyGreenlet* self)
        so even if it switches we are relatively safe. */
     // XXX: Are we responsible for clearing weakrefs here?
     Py_CLEAR(self->dict);
-    return self->pimpl->tp_clear();
+    return self->pimpl ? self->pimpl->tp_clear() : 0;
 }
 
 /**
@@ -283,7 +310,8 @@ _green_dealloc_kill_started_non_main_greenlet(BorrowedGreenlet self)
          * so we probably shouldn't mess with this? See
          * test_issue_245_reference_counting_subclass_no_threads
          */
-        if (PyType_HasFeature(self.TYPE(), Py_TPFLAGS_HEAPTYPE)) {
+        if (PyType_HasFeature(self.TYPE(), Py_TPFLAGS_HEAPTYPE)
+            && !green_deallocator_owns_type(self.TYPE())) {
             Py_INCREF(self.TYPE());
         }
 
@@ -300,12 +328,47 @@ _green_dealloc_kill_started_non_main_greenlet(BorrowedGreenlet self)
 }
 
 
+#if GREENLET_PY314 && defined(Py_GIL_DISABLED)
+static void
+green_finalize(PyGreenlet* self)
+{
+    BorrowedGreenlet me(self);
+    if (!self->pimpl || !me->active() || !me->started() || me->main()) {
+        return;
+    }
+    if (greenlet::IsShuttingDown()) {
+        me->murder_in_place();
+        return;
+    }
+
+    // FT GC can collect active greenlets; tp_is_gc cannot exclude them.
+    // Run owner cleanup, or retain the object on the existing owner queue,
+    // before tp_clear can erase the parent and owning main greenlet.
+    PyErrPieces saved_err;
+    try {
+        me->deallocing_greenlet_in_thread(
+            me->thread_state()
+            ? static_cast<ThreadState*>(GET_THREAD_STATE())
+            : nullptr);
+    }
+    catch (const PyErrOccurred&) {
+        PyErr_WriteUnraisable((PyObject*)self);
+    }
+    saved_err.PyErrRestore();
+}
+#endif
+
 static void
 green_dealloc(PyGreenlet* self)
 {
+#if GREENLET_PY314 && defined(Py_GIL_DISABLED)
+    if (PyObject_CallFinalizerFromDealloc((PyObject*)self) < 0) {
+        return;  // Resurrected; another thread may already own the last ref.
+    }
+#endif
     PyObject_GC_UnTrack(self);
     BorrowedGreenlet me(self);
-    if (me->active()
+    if (self->pimpl && me->active()
         && me->started()
         && !me->main()) {
         if (!_green_dealloc_kill_started_non_main_greenlet(me)) {
@@ -327,7 +390,12 @@ green_dealloc(PyGreenlet* self)
         delete p;
     }
     // and finally we're done. self is now invalid.
-    Py_TYPE(self)->tp_free((PyObject*)self);
+    PyTypeObject* type = Py_TYPE(self);
+    const bool release_type = green_deallocator_owns_type(type);
+    type->tp_free((PyObject*)self);
+    if (release_type) {
+        Py_DECREF(type);
+    }
 }
 
 
@@ -370,7 +438,7 @@ PyDoc_STRVAR(
     "above.\n");
 
 static PyObject*
-green_switch(PyGreenlet* self, PyObject* args, PyObject* kwargs)
+green_switch_with_args(PyGreenlet* self, greenlet::SwitchingArgs& switch_args)
 {
     // Our use of Greenlet::args() makes this method non-reentrant.
     // Therefore, check to be sure the switch will be allowed ---
@@ -395,8 +463,6 @@ green_switch(PyGreenlet* self, PyObject* args, PyObject* kwargs)
 #endif
 
 
-    using greenlet::SwitchingArgs;
-    SwitchingArgs switch_args(OwnedObject::owning(args), OwnedObject::owning(kwargs));
     self->pimpl->may_switch_away();
     self->pimpl->args() <<= switch_args;
 
@@ -453,6 +519,104 @@ green_switch(PyGreenlet* self, PyObject* args, PyObject* kwargs)
     catch(const PyErrOccurred&) {
         return nullptr;
     }
+}
+
+// The capsule C API keeps its original borrowed tuple/dict contract.
+static PyObject*
+green_switch(PyGreenlet* self, PyObject* args, PyObject* kwargs)
+{
+    greenlet::SwitchingArgs switch_args(OwnedObject::owning(args),
+                                       OwnedObject::owning(kwargs));
+    return green_switch_with_args(self, switch_args);
+}
+
+static PyObject*
+green_switch_fast(PyGreenlet* self, PyObject* const* args,
+                  Py_ssize_t nargs, PyObject* kwnames)
+{
+#if !GREENLET_PY314
+    // Older eval loops keep CALL's operand references in the caller's value
+    // stack while a native method runs, but temporarily hide that stack from
+    // frame GC. Publish only the actual argument span when it demonstrably
+    // belongs to that frame. On return the eval loop regains its old metadata;
+    // an abandoned stack retains an accurate, collectable ownership graph.
+    struct CallerStack {
+        int* depth = nullptr;
+        int saved = 0;
+        CallerStack(PyObject* const* values, Py_ssize_t count) {
+            PyThreadState* thread = PyThreadState_GET();
+#if GREENLET_PY313
+            _PyInterpreterFrame* frame = thread->current_frame;
+#elif GREENLET_PY311
+            _PyInterpreterFrame* frame = thread->cframe->current_frame;
+#else
+            PyFrameObject* frame = thread->frame;
+#endif
+            if (!frame || !values || count < 0) { return; }
+#if GREENLET_PY312
+            while (frame && frame->owner == FRAME_OWNED_BY_CSTACK) {
+                frame = frame->previous;
+            }
+            if (!frame) { return; }
+#endif
+#if GREENLET_PY313
+            PyCodeObject* code = _PyFrame_GetCode(frame);
+#else
+            PyCodeObject* code = frame->f_code;
+#endif
+#if GREENLET_PY311
+            PyObject** base = frame->localsplus + code->co_nlocalsplus;
+#else
+            PyObject** base = frame->f_valuestack;
+#endif
+            const uintptr_t low = reinterpret_cast<uintptr_t>(base);
+            const uintptr_t high = low + code->co_stacksize * sizeof(PyObject*);
+            const uintptr_t begin = reinterpret_cast<uintptr_t>(values);
+            if (begin < low || begin > high || count > (high - begin) / sizeof(PyObject*)) { return; }
+            const uintptr_t end = begin + count * sizeof(PyObject*);
+            if ((end - low) % sizeof(PyObject*)) { return; }
+#if GREENLET_PY311
+            depth = &frame->stacktop;
+            const int actual = static_cast<int>((end - reinterpret_cast<uintptr_t>(frame->localsplus)) / sizeof(PyObject*));
+#else
+            depth = &frame->f_stackdepth;
+            const int actual = static_cast<int>((end - low) / sizeof(PyObject*));
+#endif
+            saved = *depth;
+            *depth = std::max(saved, actual);
+        }
+        ~CallerStack() { if (depth) { *depth = saved; } }
+    } caller_stack(args, nargs + (kwnames ? PyTuple_GET_SIZE(kwnames) : 0));
+#endif
+    // A METH_VARARGS Python call creates an argument tuple in CPython's
+    // _PyObject_MakeTpCall. If this C stack is abandoned after its native
+    // thread exits, that caller never returns to decref the temporary.
+    // Build the tuple here and transfer every owned reference before switching.
+    OwnedObject positional = OwnedObject::consuming(PyTuple_New(nargs));
+    if (!positional) {
+        return nullptr;
+    }
+    for (Py_ssize_t i = 0; i < nargs; ++i) {
+        PyTuple_SET_ITEM(positional.borrow(), i, Py_NewRef(args[i]));
+    }
+    OwnedObject keywords;
+    if (kwnames != nullptr) {
+        keywords = OwnedObject::consuming(PyDict_New());
+        if (!keywords) {
+            return nullptr;
+        }
+        const Py_ssize_t count = PyTuple_GET_SIZE(kwnames);
+        for (Py_ssize_t i = 0; i < count; ++i) {
+            if (PyDict_SetItem(keywords.borrow(), PyTuple_GET_ITEM(kwnames, i),
+                               args[nargs + i]) < 0) {
+                return nullptr;
+            }
+        }
+    }
+    greenlet::SwitchingArgs switch_args(positional, keywords);
+    positional.CLEAR();
+    keywords.CLEAR();
+    return green_switch_with_args(self, switch_args);
 }
 
 PyDoc_STRVAR(
@@ -561,7 +725,11 @@ _green_not_dead(BorrowedGreenlet self)
         self->deactivate_and_free();
         return false;
     }
-    return self->active() || !self->started();
+    // First start publishes a stack boundary before entering inner_bootstrap.
+    // That started-but-inactive interval is live, not a completed greenlet.
+    // Native threads may observe it even while this reader holds the object
+    // critical section, because the owner switches without that section.
+    return !self->finished();
 }
 
 
@@ -748,8 +916,8 @@ green_repr(PyGreenlet* _self)
 static PyMethodDef green_methods[] = {
     {
       .ml_name="switch",
-      .ml_meth=reinterpret_cast<PyCFunction>(green_switch),
-      .ml_flags=METH_VARARGS | METH_KEYWORDS,
+      .ml_meth=reinterpret_cast<PyCFunction>(green_switch_fast),
+      .ml_flags=METH_FASTCALL | METH_KEYWORDS,
       .ml_doc=green_switch_doc
     },
     {.ml_name="throw", .ml_meth=(PyCFunction)green_throw, .ml_flags=METH_VARARGS, .ml_doc=green_throw_doc},
@@ -774,15 +942,20 @@ static PyGetSetDef green_getsets[] = {
 };
 
 static PyMemberDef green_members[] = {
-    {.name=NULL}
+    {"__dictoffset__", T_PYSSIZET, offsetof(PyGreenlet, dict), READONLY},
+    {"__weaklistoffset__", T_PYSSIZET, offsetof(PyGreenlet, weakreflist), READONLY},
+    {nullptr}
 };
 
+// Retain the established static-base C ABI in the main interpreter only.
+// Child interpreters will use the separate heap-type factory below.
+static PyMemberDef green_main_members[] = {{.name=nullptr}};
 static PyNumberMethods green_as_number = {
   .nb_bool=(inquiry)green_bool,
 };
 
 
-PyTypeObject PyGreenlet_Type = {
+PyTypeObject PyGreenlet_MainType = {
     .ob_base=PyVarObject_HEAD_INIT(NULL, 0)
     .tp_name="greenlet.greenlet", /* tp_name */
     .tp_basicsize=sizeof(PyGreenlet),  /* tp_basicsize */
@@ -801,7 +974,7 @@ PyTypeObject PyGreenlet_Type = {
     .tp_weaklistoffset=offsetof(PyGreenlet, weakreflist),  /* tp_weaklistoffset */
 
     .tp_methods=green_methods,                      /* tp_methods */
-    .tp_members=green_members,                      /* tp_members */
+    .tp_members=green_main_members,                      /* tp_members */
     .tp_getset=green_getsets,                      /* tp_getset */
     .tp_dictoffset=offsetof(PyGreenlet, dict),         /* tp_dictoffset */
     .tp_init=(initproc)green_init,               /* tp_init */
@@ -832,7 +1005,42 @@ PyTypeObject PyGreenlet_Type = {
  */
     .tp_is_gc=(inquiry)green_is_gc,         /* tp_is_gc */
 #endif
+#if GREENLET_PY314 && defined(Py_GIL_DISABLED)
+    .tp_finalize=(destructor)green_finalize,
+#endif
 };
+
+static PyTypeObject* create_greenlet_type(PyObject* module)
+{
+    static PyType_Slot slots[] = {
+        {Py_tp_dealloc, (void*)green_dealloc},
+        {Py_tp_repr, (void*)green_repr},
+        {Py_nb_bool, (void*)green_bool},
+        {Py_tp_doc, (void*)"greenlet(run=None, parent=None) -> greenlet\n\n"
+            "Creates a new greenlet object (without running it).\n\n"
+            " - *run* -- The callable to invoke.\n"
+            " - *parent* -- The parent greenlet. The default is the current greenlet."},
+        {Py_tp_traverse, (void*)green_traverse},
+        {Py_tp_clear, (void*)green_clear},
+        {Py_tp_methods, (void*)green_methods},
+        {Py_tp_members, (void*)green_members},
+        {Py_tp_getset, (void*)green_getsets},
+        {Py_tp_init, (void*)green_init},
+        {Py_tp_alloc, (void*)PyType_GenericAlloc},
+        {Py_tp_new, (void*)green_new},
+        {Py_tp_free, (void*)PyObject_GC_Del},
+#if !GREENLET_PY315 && !(GREENLET_PY314 && defined(Py_GIL_DISABLED))
+        {Py_tp_is_gc, (void*)green_is_gc},
+#endif
+#if GREENLET_PY314 && defined(Py_GIL_DISABLED)
+        {Py_tp_finalize, (void*)green_finalize},
+#endif
+        {0, nullptr}
+    };
+    PyType_Spec spec = {"greenlet.greenlet", sizeof(PyGreenlet), 0,
+        G_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_IMMUTABLETYPE, slots};
+    return reinterpret_cast<PyTypeObject*>(PyType_FromModuleAndSpec(module, &spec, nullptr));
+}
 
 #endif
 

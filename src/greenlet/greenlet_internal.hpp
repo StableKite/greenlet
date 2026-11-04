@@ -87,7 +87,10 @@ inline greenlet::Greenlet* greenlet::refs::_BorrowedGreenlet<T, TC>::operator->(
 #include <stdexcept>
 
 
-extern PyTypeObject PyGreenlet_Type;
+namespace greenlet { PyTypeObject* GetGreenletType() noexcept; }
+#ifndef PyGreenlet_Type
+#define PyGreenlet_Type (*greenlet::GetGreenletType())
+#endif
 
 
 

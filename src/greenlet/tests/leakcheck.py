@@ -23,6 +23,7 @@
 # THE SOFTWARE.
 import os
 import sys
+import sysconfig
 import gc
 
 from functools import wraps
@@ -117,6 +118,22 @@ def fails_leakcheck_on_py314_or_less(func):
     if sys.version_info[:2] <= (3, 14):
         return fails_leakcheck(func)
     return func
+
+def fails_leakcheck_on_legacy_gil(func):
+    """Require no leak on the corrected free-threaded finalizer path."""
+    if not sysconfig.get_config_var('Py_GIL_DISABLED'):
+        return fails_leakcheck_on_py314_or_less(func)
+    return func
+
+def fails_leakcheck_without_ft_finalizer(func):
+    """Require no leak on the corrected CPython 3.14+ free-threaded finalizer path.
+
+    Older runtime paths retain their existing expected-leak behavior.
+    This does not skip the test or turn off the leak checker.
+    """
+    if sys.version_info[:2] >= (3, 14) and sysconfig.get_config_var('Py_GIL_DISABLED'):
+        return func
+    return fails_leakcheck(func)
 
 class LeakCheckError(AssertionError):
     pass
@@ -297,7 +314,7 @@ class _RefCountChecker(object):
         if len(deltas) >= 4 and sum(deltas[-4:]) == 0:
             return False
 
-        if len(deltas) >= 3 and deltas[-1] > 0 and deltas[-1] == deltas[-2] and deltas[-2] == deltas[-3]:
+        if len(deltas) >= 3 and 0 < deltas[-1] == deltas[-2] == deltas[-3]:
             diff = self._report_diff(growth)
             raise LeakCheckError('refcount increased by %r\n%s' % (deltas, diff))
 

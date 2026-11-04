@@ -9,6 +9,7 @@
 #include "greenlet_internal.hpp"
 #include "greenlet_refs.hpp"
 #include "greenlet_thread_support.hpp"
+#include "TGreenletGlobals.cpp"
 
 using greenlet::LockGuard;
 using greenlet::refs::BorrowedObject;
@@ -94,6 +95,8 @@ private:
     // on 64-bit macOS 11.
     // Adding the vector takes us up to 80 bytes ()
 
+    std::shared_ptr<GreenletGlobals> owner;
+
     /* Strong reference to the main greenlet */
     OwnedMainGreenlet main_greenlet;
 
@@ -129,18 +132,12 @@ private:
     void* exception_state;
 #endif
 
-#ifdef Py_GIL_DISABLED
-    static std::atomic<std::clock_t> _clocks_used_doing_gc;
-#else
-    static std::clock_t _clocks_used_doing_gc;
-#endif
-    static ImmortalString get_referrers_name;
 
     G_NO_COPIES_OF_CLS(ThreadState);
 
 
-    // Allocates a main greenlet for the thread state. If this fails,
-    // exits the process. Called only during constructing a ThreadState.
+    // Called only during constructing a ThreadState. Allocation errors unwind
+    // through the Python/C API boundary as MemoryError.
     MainGreenlet* alloc_main()
     {
         PyGreenlet* gmain;
@@ -148,10 +145,17 @@ private:
         /* create the main greenlet for this thread */
         gmain = reinterpret_cast<PyGreenlet*>(PyType_GenericAlloc(&PyGreenlet_Type, 0));
         if (gmain == NULL) {
-            throw PyFatalError("alloc_main failed to alloc"); //exits the process
+            throw PyErrOccurred();
         }
 
-        MainGreenlet* const main = new MainGreenlet(gmain, this);
+        MainGreenlet* main;
+        try {
+            main = new MainGreenlet(gmain, this);
+        }
+        catch (...) {
+            Py_DECREF(gmain);
+            throw;
+        }
 
         assert(Py_REFCNT(gmain) == 1);
         assert(gmain->pimpl == main);
@@ -181,11 +185,10 @@ public:
 
     static void init()
     {
-        ThreadState::get_referrers_name = "get_referrers";
         ThreadState::set_clocks_used_doing_gc(0);
     }
 
-    ThreadState()
+    explicit ThreadState(std::shared_ptr<GreenletGlobals> context) : owner(std::move(context))
     {
 
 #ifdef GREENLET_NEEDS_EXCEPTION_STATE_SAVED
@@ -321,20 +324,20 @@ private:
      */
     inline void clear_deleteme_list(const bool murder=false)
     {
+        // Transfer ownership while holding the native queue mutex, then
+        // release it before any decref can run Python finalizers or switch
+        // greenlets. Such code may re-enter clear_deleteme_list().
+        deleteme_t copy;
+        {
 #ifdef Py_GIL_DISABLED
-        LockGuard deleteme_guard(this->deleteme_lock);
+            LockGuard deleteme_guard(this->deleteme_lock);
 #endif
-        if (this->deleteme.empty()) {
+            // swap is a constant-time, non-allocating ownership transfer.
+            std::swap(copy, this->deleteme);
+        }
+        if (copy.empty()) {
             return;
         }
-        // Move the list contents out with swap — a constant-time
-        // pointer exchange that never allocates. The previous
-        // code used a copy (deleteme_t copy = this->deleteme)
-        // which allocated through PythonAllocator / PyMem_Malloc;
-        // that could SIGSEGV during early Py_FinalizeEx on Python
-        // < 3.11 when the allocator is partially torn down.
-        deleteme_t copy;
-        std::swap(copy, this->deleteme);
 
         // During Py_FinalizeEx cleanup, the GC or atexit handlers
         // may have already collected objects in this list,
@@ -431,30 +434,36 @@ public:
      * Set to std::clock_t(-1) to disable.
      */
     inline static std::clock_t clocks_used_doing_gc()
-    {
-#ifdef Py_GIL_DISABLED
-        return ThreadState::_clocks_used_doing_gc.load(std::memory_order_relaxed);
-#else
-        return ThreadState::_clocks_used_doing_gc;
-#endif
-    }
-
+    { return mod_globs->clocks_used_doing_gc.load(); }
     inline static void set_clocks_used_doing_gc(std::clock_t value)
-    {
-#ifdef Py_GIL_DISABLED
-        ThreadState::_clocks_used_doing_gc.store(value, std::memory_order_relaxed);
-#else
-        ThreadState::_clocks_used_doing_gc = value;
-#endif
-    }
-
+    { mod_globs->clocks_used_doing_gc.store(value); }
     inline static void add_clocks_used_doing_gc(std::clock_t value)
+    { mod_globs->clocks_used_doing_gc.fetch_add(value); }
+
+    void close_interpreter_state() noexcept
     {
+        // The currently running Python stack belongs to CPython's thread state,
+        // not to a suspended greenlet. It may already have been cleared.
+        if (current_greenlet) {
+            current_greenlet->abandon_running_thread_state();
+        }
+        mark_main_greenlet_dead();
+        deleteme_t pending;
+        {
 #ifdef Py_GIL_DISABLED
-        ThreadState::_clocks_used_doing_gc.fetch_add(value, std::memory_order_relaxed);
-#else
-        ThreadState::_clocks_used_doing_gc += value;
+            LockGuard lock(deleteme_lock);
 #endif
+            pending.swap(deleteme);
+        }
+        for (PyGreenlet* object : pending) {
+            if (object->pimpl) {
+                object->pimpl->murder_in_place();
+            }
+            Py_DECREF(object);
+        }
+        tracefunc.CLEAR();
+        current_greenlet.CLEAR();
+        main_greenlet.CLEAR();
     }
 
     // Runs in some arbitrary thread that Python is using to invoke
@@ -462,6 +471,8 @@ public:
     // running the greenlets.
     ~ThreadState()
     {
+        if (!main_greenlet) { return; }
+        bool may_need_cycle_gc = false;
         if (!PyInterpreterState_Head()) {
             // We shouldn't get here (our callers protect us)
             // but if we do, all we can do is bail early.
@@ -512,68 +523,12 @@ public:
             // Drop one reference we hold.
             this->current_greenlet.CLEAR();
             assert(!this->current_greenlet);
-            // Only our reference to the main greenlet should be left,
-            // But hold onto the pointer in case we need to do extra cleanup.
-            PyGreenlet* old_main_greenlet = this->main_greenlet.borrow();
-            Py_ssize_t cnt = this->main_greenlet.REFCNT();
+            // A native caller can legitimately own the last reference without
+            // appearing in gc.get_referrers(). Never decref such a reference.
+            // Observe only while we still own main_greenlet, then release ours.
+            may_need_cycle_gc = this->main_greenlet.REFCNT() > 1;
             this->main_greenlet.CLEAR();
-            if (ThreadState::clocks_used_doing_gc() != std::clock_t(-1)
-                && cnt == 2 && Py_REFCNT(old_main_greenlet) == 1) {
-                // Highly likely that the reference is somewhere on
-                // the stack, not reachable by GC. Verify.
-                // XXX: This is O(n) in the total number of objects.
-                // TODO: Add a way to disable this at runtime, and
-                // another way to report on it.
-                std::clock_t begin = std::clock();
-                NewReference gc(PyImport_ImportModule("gc"));
-                if (gc) {
-                    OwnedObject get_referrers = gc.PyRequireAttr(ThreadState::get_referrers_name);
-                    OwnedList refs(get_referrers.PyCall(old_main_greenlet));
-                    if (refs && refs.empty()) {
-                        assert(refs.REFCNT() == 1);
-                        // We found nothing! So we left a dangling
-                        // reference: Probably the last thing some
-                        // other greenlet did was call
-                        // 'getcurrent().parent.switch()' to switch
-                        // back to us. Clean it up. This will be the
-                        // case on CPython 3.7 and newer, as they use
-                        // an internal calling conversion that avoids
-                        // creating method objects and storing them on
-                        // the stack.
-                        Py_DECREF(old_main_greenlet);
-                    }
-                    else if (refs
-                             && refs.size() == 1
-                             && PyCFunction_Check(refs.at(0))
-                             && Py_REFCNT(refs.at(0)) == 2) {
-                        assert(refs.REFCNT() == 1);
-                        // Ok, we found a C method that refers to the
-                        // main greenlet, and its only referenced
-                        // twice, once in the list we just created,
-                        // once from...somewhere else. If we can't
-                        // find where else, then this is a leak.
-                        // This happens in older versions of CPython
-                        // that create a bound method object somewhere
-                        // on the stack that we'll never get back to.
-                        if (PyCFunction_GetFunction(refs.at(0).borrow()) == (PyCFunction)green_switch) {
-                            BorrowedObject function_w = refs.at(0);
-                            refs.clear(); // destroy the reference
-                                          // from the list.
-                            // back to one reference. Can *it* be
-                            // found?
-                            assert(function_w.REFCNT() == 1);
-                            refs = get_referrers.PyCall(function_w);
-                            if (refs && refs.empty()) {
-                                // Nope, it can't be found so it won't
-                                // ever be GC'd. Drop it.
-                                Py_CLEAR(function_w);
-                            }
-                        }
-                    }
-                    std::clock_t end = std::clock();
-                    ThreadState::add_clocks_used_doing_gc(end - begin);
-                }
-            }
+
         }
 
         // We need to make sure this greenlet appears to be dead,
@@ -581,6 +536,7 @@ public:
         // exception in it (the thread is dead) and put it back in our
         // deleteme list.
         if (this->current_greenlet) {
+            may_need_cycle_gc = this->current_greenlet.REFCNT() > 1;
             this->current_greenlet->murder_in_place();
             this->current_greenlet.CLEAR();
         }
@@ -598,10 +554,18 @@ public:
             // // self reference, probably gone
             // this->main_greenlet->main_greenlet.CLEAR();
 
-            // This will actually go away when the ivar is destructed.
+            may_need_cycle_gc = may_need_cycle_gc || this->main_greenlet.REFCNT() > 1;
             this->main_greenlet.CLEAR();
         }
 
+        if (may_need_cycle_gc && ThreadState::clocks_used_doing_gc() != std::clock_t(-1)) {
+            // Optional cleanup uses the collector's actual ownership graph.
+            // This keeps C-owned roots alive and can collect genuine cycles.
+            // No raw main-greenlet pointer survives our owned decref above.
+            std::clock_t begin = std::clock();
+            PyGC_Collect();
+            ThreadState::add_clocks_used_doing_gc(std::clock()-begin);
+        }
         if (PyErr_Occurred()) {
             PyErr_WriteUnraisable(NULL);
             PyErr_Clear();
@@ -611,12 +575,6 @@ public:
 
 };
 
-ImmortalString ThreadState::get_referrers_name(nullptr);
-#ifdef Py_GIL_DISABLED
-std::atomic<std::clock_t> ThreadState::_clocks_used_doing_gc(0);
-#else
-std::clock_t ThreadState::_clocks_used_doing_gc(0);
-#endif
 
 
 

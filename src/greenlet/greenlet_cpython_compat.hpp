@@ -114,4 +114,8 @@ static inline void PyThreadState_LeaveTracing(PyThreadState *tstate)
 #  define Py_IsFinalizing() _Py_IsFinalizing()
 #endif
 
+#if !GREENLET_PY313
+#  define PyThreadState_GetUnchecked _PyThreadState_UncheckedGet
+#endif
+
 #endif /* GREENLET_CPYTHON_COMPAT_H */
