@@ -1,0 +1,55 @@
+name: CPython musl ARM64 errno and Greenlet integration
+
+on:
+  push:
+    branches: [diagnostics/cpython-musl-arm-errno]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  native-arm-source-runtime:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Recover the exact earlier ARM artifact and upstream CPython source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = aarch64
+          mkdir -p inputs evidence
+          gh api repos/StableKite/greenlet/actions/runs/41773887550 > evidence/original-run.json
+          test "$(jq -r .head_sha evidence/original-run.json)" = eb651bdeb4cfb8dd66467be3214598ee38ea950a
+          gh api repos/StableKite/greenlet/actions/artifacts/13295679420/zip > original-arm.zip
+          echo '231b3d80c5d91a446b8cc5313d276a428508a44b512bde2bfe93140222e96e27  original-arm.zip' | sha256sum -c
+          python3 -m zipfile -e original-arm.zip inputs/original
+          curl -fLsS --max-time 120 https://codeload.github.com/python/cpython/tar.gz/refs/tags/v3.15.2 -o inputs/cpython-v3.15.2.tar.gz
+          echo '4e35a9145e728fa51c4950d3fe490c419dc1587c7ea21757a50cb5f393762893  inputs/cpython-v3.15.2.tar.gz' | sha256sum -c
+          cp build_pair.py exercise.py probe.c driver.sh inputs/
+          cp -a inputs/original/acceptance/source inputs/fixture
+          sha256sum original-arm.zip inputs/cpython-v3.15.2.tar.gz inputs/original/acceptance/distributions/*.whl > evidence/input-sha256.txt
+      - name: Run the before and after diagnostics and full Greenlet integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          image=python@sha256:20a82dbc2783112ddb91d1534603f802d222a3e63e593cd002eb2ac534e70211
+          docker pull "$image"
+          docker image inspect "$image" > evidence/container-image.json
+          test "$(jq -r '.[0].Architecture' evidence/container-image.json)" = arm64
+          docker run --rm --cpus 2 --memory 4g \
+            --mount "type=bind,source=$PWD/inputs,target=/input,readonly" \
+            --mount "type=bind,source=$PWD/evidence,target=/output" \
+            "$image" /bin/sh /input/driver.sh 2>&1 | tee evidence/container.log
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: native-arm-errno-runtime-evidence
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 14
