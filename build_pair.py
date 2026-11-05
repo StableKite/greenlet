@@ -23,7 +23,7 @@ env.update(PYTHON_JIT='1', LD_LIBRARY_PATH=str(source), PYTHONDONTWRITEBYTECODE=
 commands = []
 
 
-def run(name, argv, cwd=source, timeout=120, extra_env=None):
+def run(name, argv, cwd=source, timeout=120, extra_env=None, required=True):
     with (evidence / (name + '.stdout.log')).open('xb') as stdout, \
          (evidence / (name + '.stderr.log')).open('xb') as stderr:
         result = subprocess.run(list(map(str, argv)), cwd=cwd, env=extra_env or env,
@@ -32,7 +32,9 @@ def run(name, argv, cwd=source, timeout=120, extra_env=None):
                      'exit_code': result.returncode})
     (evidence / 'COMMANDS.json').write_text(json.dumps(commands, indent=2) + '\n')
     print(name, result.returncode, flush=True)
-    assert result.returncode == 0, name
+    if required:
+        assert result.returncode == 0, name
+    return result.returncode
 
 
 run('configure-original-release-FT', ['./configure', '--disable-gil', '--enable-shared',
@@ -63,11 +65,23 @@ def diagnostic(stage):
         'assert not sys._is_gil_enabled() and sys.flags.gil is None and "PYTHON_GIL" not in os.environ; '
         'print(json.dumps({"version":sys.version,"GIL":False,"gil_flag":None,"Py_DEBUG":sysconfig.get_config_var("Py_DEBUG"),'
         '"JIT_available":sys._jit.is_available(),"JIT_enabled":sys._jit.is_enabled()}))'])
-    run(stage + '-unchanged-diagnostic', [python, '-I', '-B', out / 'exercise.py', out,
-        '/input/fixture/src/greenlet'], timeout=80)
-    result = json.loads((out / 'RESULT.json').read_text())
-    stages.append({'stage': stage, 'Python_errors': len(result['Python_errors']),
-                   'phase_transitions': len(result['observations']),
+    exit_code = run(stage + '-unchanged-diagnostic', [python, '-I', '-B', out / 'exercise.py', out,
+        '/input/fixture/src/greenlet'], timeout=80, required=stage == 'after')
+    if exit_code:
+        # The original ARM runtime can fail in stdlib imports before the
+        # exercise reaches its recorder. Preserve that real baseline failure.
+        stderr = evidence / (stage + '-unchanged-diagnostic.stderr.log')
+        assert stage == 'before' and 'BlockingIOError: [Errno 11]' in stderr.read_text(), stage
+        result = {'status': 'BASELINE_ABORTED_BY_EAGAIN', 'exit_code': exit_code,
+                  'stderr_sha256': hashlib.sha256(stderr.read_bytes()).hexdigest(),
+                  'Python_errors': None, 'phase_transitions': None}
+        (out / 'EARLY_BASELINE_FAILURE.json').write_text(json.dumps(result, indent=2) + '\n')
+    else:
+        details = json.loads((out / 'RESULT.json').read_text())
+        result = {'status': details['status'], 'exit_code': exit_code,
+                  'Python_errors': len(details['Python_errors']),
+                  'phase_transitions': len(details['observations'])}
+    stages.append({'stage': stage, **result,
                    'source_sha256': hashlib.sha256(state.read_bytes()).hexdigest(),
                    'libpython_sha256': hashlib.sha256((out / 'libpython3.15t.so.1.0').read_bytes()).hexdigest()})
     (evidence / 'STAGES.json').write_text(json.dumps(stages, indent=2) + '\n')
@@ -89,10 +103,9 @@ state.write_text(fixed)
 run('compile-source-errno-fix', ['make', '-j2'], timeout=180)
 diagnostic('after')
 after = json.loads((evidence / 'after/RESULT.json').read_text())
-before = json.loads((evidence / 'before/RESULT.json').read_text())
 record = {'status': 'SOURCE_BUILD_CAUSAL_PAIR_COMPLETE_NOT_GREENLET_RELEASE_ACCEPTANCE',
           'source_tag': 'v3.15.2', 'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
-          'before_Python_errors': len(before['Python_errors']), 'before_observations': len(before['observations']),
+          'before': stages[0],
           'after_Python_errors': len(after['Python_errors']), 'after_observations': len(after['observations']),
           'same_diagnostic_sha256': hashlib.sha256(probe_source.encode()).hexdigest(),
           'installed_SDK_modified': False, 'Greenlet_imported': False}
