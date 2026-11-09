@@ -279,6 +279,16 @@ static const char* const copy_on_greentype[] = {
     NULL
 };
 
+#if GREENLET_PY314 && defined(Py_GIL_DISABLED)
+static void cleanup_capsule(PyObject* UNUSED(capsule))
+{
+    // Скрытая копия словаря расширения также удаляется при завершении.
+    if (greenlet::IsShuttingDown()) {
+        GET_THREAD_STATE().destroy_with_thread_state();
+    }
+}
+#endif
+
 static struct PyModuleDef greenlet_module_def = {
     .m_base=PyModuleDef_HEAD_INIT,
     .m_name="greenlet._greenlet",

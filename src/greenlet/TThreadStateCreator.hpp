@@ -55,6 +55,16 @@ public:
         this->_state = nullptr;
     }
 
+    void destroy_with_thread_state() noexcept
+    {
+        if (this->has_state()) {
+            ThreadState* state = this->_state;
+            this->_state = nullptr;
+            state->mark_main_greenlet_dead();
+            delete state;
+        }
+    }
+
     inline ThreadState& state()
     {
         // The main greenlet will own this pointer when it is created,

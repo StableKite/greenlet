@@ -469,7 +469,7 @@ void PythonState::tp_clear(bool own_top_frame) noexcept
 {
     PythonStateContext::tp_clear();
 #if GREENLET_PY314 && defined(Py_GIL_DISABLED)
-    this->c_stack_ref_snapshot.clear();
+    std::vector<OwnedObject>().swap(this->c_stack_ref_snapshot);
 #endif
     // If we get here owning a frame,
     // we got dealloc'd without being finished. We may or may not be

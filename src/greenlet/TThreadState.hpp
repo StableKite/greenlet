@@ -321,20 +321,17 @@ private:
      */
     inline void clear_deleteme_list(const bool murder=false)
     {
-#ifdef Py_GIL_DISABLED
-        LockGuard deleteme_guard(this->deleteme_lock);
-#endif
-        if (this->deleteme.empty()) {
-            return;
-        }
-        // Move the list contents out with swap — a constant-time
-        // pointer exchange that never allocates. The previous
-        // code used a copy (deleteme_t copy = this->deleteme)
-        // which allocated through PythonAllocator / PyMem_Malloc;
-        // that could SIGSEGV during early Py_FinalizeEx on Python
-        // < 3.11 when the allocator is partially torn down.
         deleteme_t copy;
-        std::swap(copy, this->deleteme);
+        {
+#ifdef Py_GIL_DISABLED
+            LockGuard deleteme_guard(this->deleteme_lock);
+#endif
+            if (this->deleteme.empty()) {
+                return;
+            }
+            // Обратные вызовы выполняются после освобождения блокировки.
+            std::swap(copy, this->deleteme);
+        }
 
         // During Py_FinalizeEx cleanup, the GC or atexit handlers
         // may have already collected objects in this list,
@@ -479,7 +476,12 @@ public:
         if (greenlet::IsShuttingDown()) {
             this->tracefunc.CLEAR();
             if (this->current_greenlet) {
-                this->current_greenlet->murder_in_place();
+                if (this->current_greenlet == this->main_greenlet) {
+                    this->current_greenlet->tp_clear();
+                }
+                else {
+                    this->current_greenlet->murder_in_place();
+                }
                 this->current_greenlet.CLEAR();
             }
             this->main_greenlet.CLEAR();

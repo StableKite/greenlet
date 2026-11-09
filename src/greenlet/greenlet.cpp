@@ -278,6 +278,12 @@ greenlet_internal_mod_init() noexcept
         m.PyAddObject("_C_API", c_api_object);
         assert(c_api_object.REFCNT() == 2);
 
+#if GREENLET_PY314 && defined(Py_GIL_DISABLED)
+        const NewReference cleanup(Require(PyCapsule_New(
+            &greenlet_module_def, "greenlet._shutdown_cleanup", cleanup_capsule)));
+        m.PyAddObject("_shutdown_cleanup", cleanup);
+#endif
+
         // cerr << "Sizes:"
         //      << "\n\tGreenlet       : " << sizeof(Greenlet)
         //      << "\n\tUserGreenlet   : " << sizeof(UserGreenlet)
