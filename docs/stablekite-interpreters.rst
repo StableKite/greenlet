@@ -148,3 +148,12 @@ The original 172 test identities remain, with a finished-greenlet shutdown
 regression and four additional public fiber scenarios. These source changes
 require fresh native and sanitizer qualification. They do not close the
 separate stock-musl CPython errno defect or imply a completed publication.
+
+
+The context anchor releases its native shared-owner holder during tp_clear
+and explicit ContextRoot shutdown. The holder is detached before callbacks,
+then retained locally until close() completes. A heap type may retain its
+Python anchor beyond interpreter cleanup, so native ownership cannot depend
+solely on the anchor's tp_dealloc. The fully instrumented predecessor showed
+a 16-byte holder leak after ordinary import; this correction requires fresh
+strict ASan/UBSan/LSan and native lifetime qualification.

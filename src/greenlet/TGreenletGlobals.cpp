@@ -93,8 +93,12 @@ static int context_anchor_traverse(ContextAnchor* self, visitproc visit, void* a
 
 static int context_anchor_clear(ContextAnchor* self)
 {
-    if (self->owner) {
-        (*self->owner)->close();
+    // Detach before close() can release types and re-enter Python GC. The
+    // local holder keeps the native domain alive throughout those callbacks.
+    std::unique_ptr<std::shared_ptr<GreenletGlobals>> owner(self->owner);
+    self->owner = nullptr;
+    if (owner) {
+        (*owner)->close();
     }
     return 0;
 }
@@ -103,7 +107,6 @@ static void context_anchor_dealloc(ContextAnchor* self)
 {
     PyObject_GC_UnTrack(self);
     context_anchor_clear(self);
-    delete self->owner;
     PyTypeObject* type = Py_TYPE(self);
     type->tp_free(reinterpret_cast<PyObject*>(self));
     Py_DECREF(type);
@@ -139,6 +142,12 @@ struct ContextRoot {
     explicit ContextRoot(std::shared_ptr<GreenletGlobals> value) : owner(std::move(value)) {}
     ~ContextRoot() {
         owner->close();
+        if (anchor) {
+            // A surviving/immortalized heap type can retain the Python
+            // anchor after interpreter shutdown. Release its native holder
+            // at the actual owner lifetime boundary, not only tp_dealloc.
+            context_anchor_clear(reinterpret_cast<ContextAnchor*>(anchor));
+        }
         Py_XDECREF(anchor);
     }
 };
