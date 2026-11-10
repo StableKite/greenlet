@@ -1,0 +1,36 @@
+name: Diagnostic ordinary 3.15.2 USS ownership
+on:
+  push:
+    branches: [stablekite/diagnose-normal3152-uss-v1]
+permissions:
+  contents: read
+env:
+  PYTHON_JIT: '1'
+  PYTHONDONTWRITEBYTECODE: '1'
+  PYTHONFAULTHANDLER: '1'
+jobs:
+  observe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.15'
+          allow-prereleases: false
+          check-latest: true
+      - name: Observe both real native source revisions on one normal-GIL runner
+        run: python -I -B tools/diagnostics/normal3152_uss_driver.py
+      - name: Preserve read-only diagnostics without environments
+        if: always()
+        run: python -I -B tools/acceptance/prepare_evidence.py uss-diagnostic uss-diagnostic-upload
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: normal3152-USS-native-causal-diagnostics
+          path: uss-diagnostic-upload/
+          if-no-files-found: error
+          include-hidden-files: true
