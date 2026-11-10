@@ -138,7 +138,10 @@ with (out / 'one-original-full-suite-late-attach.stdout.log').open('xb') as stdo
                             '-ex', debug_setting,
                             '-ex', 'source ' + str(source / 'tools/diagnostics/normal3152_heap_gdb.py'),
                             '-ex', 'python next(t for t in gdb.selected_inferior().threads() if t.ptid[1] == gdb.selected_inferior().pid).switch()',
-                            '-ex', 'python snapshot(0)', '-ex', 'detach'], required=False, timeout=180)
+                            '-ex', 'python snapshot(0)',
+                            '-ex', 'hbreak __cxa_throw', '-ex', 'signal SIGCONT',
+                            '-ex', 'bt 25', '-ex', 'info symbol $rsi',
+                            '-ex', 'detach'], required=False, timeout=180)
                     finally:
                         os.kill(process.pid, signal.SIGCONT)
             time.sleep(0.05)
