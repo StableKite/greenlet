@@ -139,6 +139,7 @@ static PyObject* create_context_anchor(const std::shared_ptr<GreenletGlobals>& o
 struct ContextRoot {
     std::shared_ptr<GreenletGlobals> owner;
     PyObject* anchor = nullptr;
+    PyObject* exit_capsule = nullptr;  // Owned until the interpreter native exit callback.
     explicit ContextRoot(std::shared_ptr<GreenletGlobals> value) : owner(std::move(value)) {}
     ~ContextRoot() {
         owner->close();
@@ -161,6 +162,26 @@ struct GlobalsCache {
 static thread_local GlobalsCache globals_cache;
 static const char* const globals_key = "greenlet.interpreter_context.315t.v1";
 static const char* const globals_capsule_name = "greenlet.interpreter_context";
+
+#if GREENLET_PY313
+static char closed_context_marker;
+static const char* const closed_context_capsule_name = "greenlet.closed_interpreter_context";
+
+static void context_owner_at_interpreter_exit(void* argument) noexcept
+{
+    auto* holder = static_cast<ContextRoot*>(argument);
+    PyObject* capsule = holder->exit_capsule;
+    holder->exit_capsule = nullptr;
+    // The callback owns this capsule until now, so its native pointer remains
+    // valid even when a retained frame/type keeps the interpreter dictionary
+    // alive past its clear phase. Retire the capsule before native deletion.
+    PyCapsule_SetDestructor(capsule, nullptr);
+    PyCapsule_SetPointer(capsule, &closed_context_marker);
+    PyCapsule_SetName(capsule, closed_context_capsule_name);
+    delete holder;
+    Py_DECREF(capsule);
+}
+#endif
 
 static void globals_capsule_destroy(PyObject* capsule) noexcept
 {
@@ -254,6 +275,22 @@ static std::shared_ptr<GreenletGlobals> GetOrCreateGlobals()
     if (!installed_holder) {
         throw PyErrOccurred();
     }
+#if GREENLET_PY313
+    if (result == 0) {
+        // Python capsules alone have no guaranteed finalization time: a
+        // suspended C stack can retain the interpreter dictionary. Use the
+        // owning interpreter's native shutdown boundary, after Python atexit
+        // consumers have finished using greenlet, rather than a global hook.
+        Py_INCREF(installed);
+        installed_holder->exit_capsule = installed;
+        if (PyUnstable_AtExit(interpreter, context_owner_at_interpreter_exit,
+                              installed_holder) < 0) {
+            installed_holder->exit_capsule = nullptr;
+            Py_DECREF(installed);
+            throw PyErrOccurred();
+        }
+    }
+#endif
     owner = installed_holder->owner;
     globals_cache.interpreter = interpreter;
     globals_cache.interpreter_id = owner->interpreter_id;

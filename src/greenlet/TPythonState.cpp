@@ -518,7 +518,7 @@ void PythonState::abandon_running_thread_state() noexcept
     this->datastack_limit = nullptr;
 #endif
 #if GREENLET_PY314 && defined(Py_GIL_DISABLED)
-    this->c_stack_ref_snapshot.clear();
+    std::vector<OwnedObject>().swap(this->c_stack_ref_snapshot);
 #endif
 }
 

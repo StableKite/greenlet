@@ -22,7 +22,7 @@ __all__ = [
 ###
 # Metadata
 ###
-__version__ = '3.5.7.dev1+stablekite.3'
+__version__ = '3.5.7.dev1+stablekite.4'
 from ._greenlet import _C_API # pylint:disable=no-name-in-module
 
 ###

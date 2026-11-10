@@ -138,8 +138,8 @@ The fallback shutdown destructor clears a current main greenlet directly.
 Final frame disposal also releases the native snapshot buffer capacity, while
 the 3.14 suspended-frame owning pins keep their previous lifetime guard.
 
-On Linux, GREENLET_ASAN_FIBERS=1 enables sanitizer fiber notifications for
-an instrumented build. Each logical stack retains its own fake-stack handle;
+On Linux, GREENLET_ASAN_FIBERS=1 enables paired sanitizer fiber notifications
+when used with an ASan runtime. Each logical stack retains its own fake-stack handle;
 the physical native stack bounds are thread-local C data. The hook uses the
 const current-greenlet getter: queue maintenance cannot run after PythonState
 has been saved for the low-level stack switch. Normal builds omit the hooks.
@@ -157,3 +157,29 @@ Python anchor beyond interpreter cleanup, so native ownership cannot depend
 solely on the anchor's tp_dealloc. The fully instrumented predecessor showed
 a 16-byte holder leak after ordinary import; this correction requires fresh
 strict ASan/UBSan/LSan and native lifetime qualification.
+
+
+Interpreter finalization owns the native context root independently of Python
+capsule destruction on CPython 3.13 and newer. A native per-interpreter exit
+callback holds the capsule until the real interpreter lifetime ends, after
+all Python atexit consumers have run. It retires the capsule's name, pointer
+and destructor before releasing the native owner. A retained Python object
+therefore cannot postpone native cleanup indefinitely, and a late capsule
+destructor cannot dereference a freed root. The older-runtime capsule path
+is unchanged. Abandoning the currently running Python state also releases
+its now-empty native stack-reference snapshot capacity.
+
+The ordinary-import leak fix alone did not cover a real gevent Hub: the
+unchanged Sync integration suite exposed native context and snapshot leaks
+at process exit. The per-interpreter callback trial passes the real Hub,
+monkey patching, both SI import orders, failed initialization and all 13
+unchanged Sync gevent tests with ASan/UBSan/LSan enabled. The exact committed
+source still requires full native and sanitizer requalification.
+
+The sanitizer scope distinguishes compiler instrumentation from fiber hooks:
+CPython, Sync native code and external C/C++ consumers use ASan/UBSan;
+Greenlet uses an ordinary C++ build with paired fiber hooks, and gevent uses
+an ordinary native build. This does not claim full compiler instrumentation
+of the Greenlet stack-switching translation unit. A separate attempt at
+that stronger scope exposed ASan fake-stack interaction in the assembly
+switcher; no source-level sanitizer exclusions or suppressions are added.
