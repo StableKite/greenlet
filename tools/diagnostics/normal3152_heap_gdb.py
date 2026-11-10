@@ -42,7 +42,7 @@ def snapshot(phase):
         size = gdb.lookup_type('size_t').sizeof
         assert size == 8
         tcache = gdb.parse_and_eval('tcache')
-        result['main_thread_tcache'] = hex(address(tcache))
+        result['selected_thread_tcache'] = hex(address(tcache))
         cached = set()
         if tcache:
             bins = int(gdb.parse_and_eval('mp_.tcache_bins'))
@@ -91,7 +91,7 @@ def snapshot(phase):
                     item['bin'] = index + 1
                     if item['bytes'] >= 1024 * 1024:
                         _, adjacent = chunk(current + item['bytes'])
-                        adjacent['in_main_tcache'] = current + item['bytes'] in cached
+                        adjacent['in_selected_thread_tcache'] = current + item['bytes'] in cached
                         adjacent['user'] = hex(current + item['bytes'] + 2 * size)
                         item['next_chunk'] = adjacent
                     record['free_bins'].append(item)
@@ -122,4 +122,5 @@ class SnapshotBreakpoint(gdb.Breakpoint):
         return False
 
 
-SnapshotBreakpoint('sk_malloc_snapshot_marker')
+if os.environ.get('SK_HEAP_GDB_ATTACH_ONLY') != '1':
+    SnapshotBreakpoint('sk_malloc_snapshot_marker')

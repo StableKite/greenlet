@@ -6,6 +6,8 @@ import json
 import os
 import re
 import shutil
+import signal
+import time
 import subprocess
 import sys
 import sysconfig
@@ -104,46 +106,59 @@ run('original-environment-inventory', [python, '-m', 'pip', 'freeze', '--all'])
 tests = directory / 'src/greenlet/tests'
 before = {str(p.relative_to(tests)): sha256(p.read_bytes()).hexdigest() for p in tests.rglob('*.py')}
 
-# This independent marker has a void(int) public C ABI and no allocator/Python
-# operations. It gives GDB a stable stop after the original USS read. The
-# canonical Greenlet extension and every original test byte remain unchanged.
-marker_source = out / 'inert_snapshot_marker.c'
-marker_source.write_text('__attribute__((noinline,visibility("default"))) void sk_malloc_snapshot_marker(int phase) { __asm__ __volatile__("" : : "r"(phase) : "memory"); }\n')
-marker = out / 'inert_snapshot_marker.so'
-run('compile-inert-marker', ['cc', '-g', '-O0', '-shared', '-fPIC', '-o', marker, marker_source])
-probe_original = (source / 'tools/diagnostics/normal3152_uss_probe.py').read_text()
-probe = probe_original.replace('original=TestCase.get_process_uss;sequence=0;profile_memory_reads=0',
-    "marker=ctypes.CDLL(os.environ['SK_HEAP_MARKER']);marker.sk_malloc_snapshot_marker.argtypes=[ctypes.c_int];marker.sk_malloc_snapshot_marker.restype=None\noriginal=TestCase.get_process_uss;sequence=0;profile_memory_reads=0;heap_snapshot_phase=0")
-assert probe != probe_original
-probe = probe.replace('global sequence,profile_memory_reads', 'global sequence,profile_memory_reads,heap_snapshot_phase')
-needle = "        with (out/'USS_OBSERVATIONS.jsonl').open('a') as stream:stream.write(json.dumps(row)+'\\n')"
-assert probe.count(needle) == 1
-probe = probe.replace(needle, needle + "\n        if self.id().endswith('unfinished_thread_dealloc_in_thread') and heap_snapshot_phase<6:\n            marker.sk_malloc_snapshot_marker(heap_snapshot_phase)\n            heap_snapshot_phase+=1")
-ast.parse(probe)
-probe_path = out / 'read_only_marker_probe.py'
-probe_path.write_text(probe)
+# Run normally until a measured main-thread increase asks for a snapshot.
+# No debugger or extra malloc_info call perturbs the preceding workload.
+probe = source / 'tools/diagnostics/normal3152_heap_late_probe.py'
 observations = out / 'original-observations'
 gdb_output = out / 'heap-snapshots'
-commands = out / 'gdb.commands'
-commands.write_text('\n'.join(['set pagination off', 'set confirm off', 'set breakpoint pending on',
-    'set disable-randomization off', 'set debuginfod enabled off', 'set auto-load python-scripts off',
-    'set print thread-events off', 'set follow-fork-mode parent', 'set detach-on-fork on', debug_setting,
-    'handle SIGALRM nostop noprint pass', 'handle SIGUSR1 nostop noprint pass',
-    'handle SIGUSR2 nostop noprint pass', 'handle SIGPIPE nostop noprint pass',
-    'source ' + str(source / 'tools/diagnostics/normal3152_heap_gdb.py'),
-    'run', 'info program', 'thread apply all bt 6']) + '\n')
-run('one-original-full-suite-under-read-only-gdb', ['gdb', '-nh', '-nx', '--batch', '-x', commands,
-    '--args', python, '-B', probe_path, observations], cwd=directory,
-    environment=dict(env, SK_HEAP_GDB_OUT=str(gdb_output), SK_HEAP_MARKER=str(marker)), required=False, timeout=1800)
+request_file = observations / 'GDB_ATTACH_REQUEST.json'
+argv = [str(python), '-B', str(probe), str(observations)]
+started = time.monotonic()
+attached = False
+with (out / 'one-original-full-suite-late-attach.stdout.log').open('xb') as stdout, (out / 'one-original-full-suite-late-attach.stderr.log').open('xb') as stderr:
+    process = subprocess.Popen(argv, cwd=directory, env=env, stdout=stdout, stderr=stderr)
+    try:
+        while process.poll() is None:
+            assert time.monotonic() - started < 1800, 'Original diagnostic suite timeout.'
+            if request_file.is_file() and not attached:
+                request = json.loads(request_file.read_text())
+                assert request['pid'] == request['native_thread'] == process.pid and request['delta'] > 3 * 1024 * 1024
+                status = Path('/proc/' + str(process.pid) + '/status').read_text()
+                if re.search(r'^State:\s+T', status, re.MULTILINE):
+                    attached = True
+                    try:
+                        run('late-attach-read-only-gdb', ['sudo', '-n', 'env',
+                            'SK_HEAP_GDB_OUT=' + str(gdb_output), 'SK_HEAP_GDB_ATTACH_ONLY=1',
+                            'gdb', '-nh', '-nx', '--batch', '-p', str(process.pid),
+                            '-ex', 'set pagination off', '-ex', 'set confirm off',
+                            '-ex', 'set debuginfod enabled off', '-ex', 'set auto-load python-scripts off',
+                            '-ex', debug_setting,
+                            '-ex', 'source ' + str(source / 'tools/diagnostics/normal3152_heap_gdb.py'),
+                            '-ex', 'python next(t for t in gdb.selected_inferior().threads() if t.ptid[1] == gdb.selected_inferior().pid).switch()',
+                            '-ex', 'python snapshot(0)', '-ex', 'detach'], required=False, timeout=180)
+                    finally:
+                        os.kill(process.pid, signal.SIGCONT)
+            time.sleep(0.05)
+        code = process.wait()
+    finally:
+        if process.poll() is None:
+            os.kill(process.pid, signal.SIGCONT)
+            process.terminate()
+            process.wait(timeout=30)
+rows.append({'name': 'one-original-full-suite-late-attach', 'argv': argv, 'exit_code': code})
+(out / 'STAGES.json').write_text(json.dumps(rows, indent=2) + '\n')
 assert before == {str(p.relative_to(tests)): sha256(p.read_bytes()).hexdigest() for p in tests.rglob('*.py')}
 assert sha256(libc.read_bytes()).hexdigest() == libc_sha
 snapshots = [json.loads(p.read_text()) for p in sorted(gdb_output.glob('phase-*.json'))] if gdb_output.is_dir() else []
-result = {'status': 'DIAGNOSTIC_ONLY_NOT_ACCEPTANCE', 'native_source': head, 'test_source': head,
-          'original_test_hashes_unchanged': before, 'snapshots': len(snapshots),
-          'successful_snapshots': sum(s['status'].startswith('PASS_') for s in snapshots),
+result = {'status': 'DIAGNOSTIC_LATE_ATTACH_ONLY_AFTER_MEASURED_SPIKE_NOT_ACCEPTANCE',
+          'native_source': head, 'test_source': head, 'original_test_bytes_unchanged': True,
+          'original_test_hashes': before, 'late_attach_requested': attached,
+          'request': json.loads(request_file.read_text()) if request_file.is_file() else None,
+          'snapshots': len(snapshots), 'successful_snapshots': sum(s['status'].startswith('PASS_') for s in snapshots),
           'original_assertions': json.loads((observations / 'RESULT.json').read_text()) if (observations / 'RESULT.json').is_file() else None,
-          'threshold_workload_allocator_settings_changed': False, 'malloc_trim_or_inferior_function_calls': False,
-          'canonical_source_or_SDK_changed': False, 'libc_bytes_unchanged': True,
-          'original_test_bytes_unchanged': True, 'acceptance_claimed': False}
+          'threshold_workload_allocator_settings_changed': False,
+          'debugger_during_workload_before_measured_spike': False,
+          'malloc_trim_or_inferior_function_calls': False, 'canonical_source_or_SDK_changed': False,
+          'libc_bytes_unchanged': True, 'acceptance_claimed': False}
 (out / 'RESULT.json').write_text(json.dumps(result, indent=2) + '\n')
-print(json.dumps({key: value for key, value in result.items() if key != 'original_test_hashes_unchanged'}), flush=True)
+print(json.dumps({key: value for key, value in result.items() if key not in ('original_test_hashes', 'original_assertions')}), flush=True)
