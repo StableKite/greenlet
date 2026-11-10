@@ -62,18 +62,25 @@ assert shutil.which('gdb')
 run('host-libc-version', ['getconf', 'GNU_LIBC_VERSION'])
 assert (out / 'host-libc-version.stdout.log').read_text().strip() == 'glibc 2.39'
 identifier = build_id(libc)
-debug_root = out / 'symbols'
+# The previous diagnostic's Ubuntu debuginfod request returned HTTP404 before
+# any native test ran. Download the exact installed package's symbols instead;
+# extract them privately without installing/upgrading libc or any runtime.
+run('installed-libc-package-version', ['dpkg-query', '-W', '-f=${Version}', 'libc6:amd64'])
+package_version = (out / 'installed-libc-package-version.stdout.log').read_text().strip()
+(out / 'LIBC_BEFORE_SYMBOL_DOWNLOAD.json').write_text(json.dumps({'libc': str(libc),
+    'sha256': libc_sha, 'build_id': identifier, 'package': package_version}, indent=2) + '\n')
+run('download-exact-libc-debug-package', ['apt-get', 'download', 'libc6-dbg=' + package_version], cwd=out)
+package, = out.glob('libc6-dbg_*.deb')
+debug_package = out / 'debug-package'
+run('extract-debug-symbols-only', ['dpkg-deb', '--extract', package, debug_package])
+debug_root = debug_package / 'usr/lib/debug'
 debug_file = debug_root / '.build-id' / identifier[:2] / (identifier[2:] + '.debug')
-debug_file.parent.mkdir(parents=True)
-url = 'https://debuginfod.ubuntu.com/buildid/' + identifier + '/debuginfo'
-with urllib.request.urlopen(url, timeout=90) as response, debug_file.open('xb') as stream:
-    final_url = response.url
-    while data := response.read(1024 * 1024):
-        stream.write(data)
+assert debug_file.is_file()
 assert build_id(debug_file) == identifier
 (out / 'MATCHED_LIBC_DEBUG.json').write_text(json.dumps({'libc': str(libc), 'libc_sha256': libc_sha,
     'build_id': identifier, 'debug_file': str(debug_file), 'debug_file_sha256': sha256(debug_file.read_bytes()).hexdigest(),
-    'url': url, 'final_url': final_url, 'runtime_or_libc_replaced': False,
+    'debug_package': str(package), 'package_sha256': sha256(package.read_bytes()).hexdigest(),
+    'runtime_or_libc_replaced': False,
     'reference': 'https://www.sourceware.org/gdb/current/onlinedocs/gdb.html/Separate-Debug-Files.html'}, indent=2) + '\n')
 debug_setting = 'set debug-file-directory ' + str(debug_root) + ':/usr/lib/debug'
 run('matched-libc-types-preflight', ['gdb', '-nh', '-nx', '--batch', '-ex', 'set debuginfod enabled off',
