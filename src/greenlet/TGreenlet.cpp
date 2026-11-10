@@ -604,9 +604,14 @@ Greenlet::deallocing_greenlet_in_thread(const ThreadState* current_thread_state)
         // To get here it had to have run before
         /* Send the greenlet a GreenletExit exception. */
 
-        // We don't care about the return value, only whether an
-        // exception happened.
-        this->throw_GreenletExit_during_dealloc(*current_thread_state);
+        // g_switch_finish can return a null/error result for a Python
+        // exception. Destruction has no Python caller to receive it, so
+        // retain the existing C++ boundary that reports an unraisable
+        // error if the dying greenlet raises something other than exit.
+        OwnedObject result = this->throw_GreenletExit_during_dealloc(*current_thread_state);
+        if (!result) {
+            throw PyErrOccurred::from_current();
+        }
         return;
     }
 
