@@ -107,6 +107,14 @@ canonical source archive, their RECORD checksums and provenance, then installs
 the glibc wheel in a fresh consumer with the original-header C client and both
 real interpreter import orders.
 
+Before any devpi credentials are made available, the original ``tests.yml``
+push workflow must succeed on the same repository, default branch and commit.
+The publisher waits at most 30 minutes for that workflow. A failed, missing or
+still-pending result withholds publication; an older successful attempt cannot
+replace a newer failed or pending attempt. The checked run and attempt are
+recorded in ``ORIGINAL_COMPATIBILITY.json``, which every later publication phase
+requires. Unchanged-version validation skips this publication-only gate too.
+
 The canonical endpoint is ``https://devpi.stablekite.com/StableKite/index/``.
 ``DEVPI_READ_TOKEN`` must be a separately authorized credential for authenticated
 collision checks and post-upload reads. ``DEVPI_TOKEN`` is confined to the upload

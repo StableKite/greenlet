@@ -57,6 +57,9 @@ jobs:
     name: Publish qualified five-platform set
     needs: [native, musl]
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
     concurrency:
       group: greenlet-default-publication
       cancel-in-progress: false
@@ -81,6 +84,11 @@ jobs:
       - name: Validation-only success, no devpi access or republish
         if: steps.release.outputs.should_publish != 'true'
         run: python -c "import json; p=json.load(open('publication/PLAN.json')); assert p['should_publish'] is False; print('PASS_VALIDATION_ONLY_NO_REPUBLISH', p['previous_version'], p['current_version'])"
+      - name: Original compatibility must succeed on this exact commit
+        if: steps.release.outputs.should_publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python -I -B tools/acceptance/release.py compatibility . publication
       - name: Authenticated fail-closed read and collision check
         if: steps.release.outputs.should_publish == 'true'
         env:

@@ -16,6 +16,7 @@ import subprocess
 import sys
 import sysconfig
 import tarfile
+import time
 import tomllib
 from urllib.parse import quote, unquote, urlsplit
 import zipfile
@@ -134,7 +135,7 @@ def plan_release(source, out):
     print(json.dumps(result))
 
 
-def checked_plan(source, out):
+def checked_plan(source, out, *, compatibility_required=True):
     plan = read(out / 'PLAN.json')
     require(plan['should_publish'] is True, 'Network/artifact publication phase forbidden for validation-only.')
     require(plan['git_head'] == os.environ['GITHUB_SHA'] == git(source, 'rev-parse', 'HEAD'),
@@ -143,7 +144,68 @@ def checked_plan(source, out):
             'Publication must use the exact default branch.')
     require(plan['current_version'] == source_version(source) and plan['endpoint'] == INDEX,
             'Publication metadata changed after planning.')
+    if compatibility_required:
+        proof = read(out / 'ORIGINAL_COMPATIBILITY.json')
+        require(proof['git_head'] == plan['git_head'] and
+                proof['branch'] == plan['default_branch'] and
+                proof['workflow'] == '.github/workflows/tests.yml' and
+                proof['conclusion'] == 'success',
+                'Successful original compatibility CI for this exact head is required.')
     return plan
+
+
+def compatibility_run(runs, head, branch, workflow_id):
+    matches = [run for run in runs if run.get('head_sha') == head and
+               run.get('head_branch') == branch and run.get('event') == 'push' and
+               run.get('workflow_id') == workflow_id and
+               run.get('repository', {}).get('full_name') == 'StableKite/greenlet']
+    require(bool(matches), 'No original push compatibility run for this exact head.')
+    # Never replace a newer failing/pending run with an older successful one.
+    return max(matches, key=lambda run: (run['run_number'], run['run_attempt']))
+
+
+def compatibility_release(source, out):
+    plan = checked_plan(source, out, compatibility_required=False)
+    require('DEVPI_TOKEN' not in os.environ and 'DEVPI_READ_TOKEN' not in os.environ,
+            'Devpi credentials are forbidden during compatibility validation.')
+    import requests
+    base = 'https://api.github.com/repos/StableKite/greenlet/'
+    deadline = time.monotonic() + 1800
+    with requests.Session() as session:
+        session.trust_env = False
+        session.headers.update({'Accept': 'application/vnd.github+json',
+                                'X-GitHub-Api-Version': '2022-11-28'})
+        token = os.environ.get('GH_TOKEN')
+        if token:
+            session.headers['Authorization'] = 'Bearer ' + token
+
+        def fetch(path, params=None):
+            response = session.get(base + path, params=params, timeout=(10, 30),
+                                   allow_redirects=False)
+            require(response.status_code == 200, 'Original compatibility metadata unavailable.')
+            return response.json()
+
+        workflow = fetch('actions/workflows/tests.yml')
+        require(workflow['path'] == '.github/workflows/tests.yml' and
+                workflow['state'] == 'active', 'Original compatibility workflow mismatch.')
+        while True:
+            data = fetch('actions/workflows/tests.yml/runs', {
+                'head_sha': plan['git_head'], 'branch': plan['default_branch'],
+                'event': 'push', 'per_page': 100})
+            require(data['total_count'] <= 100, 'Ambiguous compatibility run history.')
+            run = compatibility_run(data['workflow_runs'], plan['git_head'],
+                                    plan['default_branch'], workflow['id'])
+            if run['status'] == 'completed':
+                proof = {'git_head': plan['git_head'], 'branch': plan['default_branch'],
+                         'workflow': workflow['path'], 'workflow_id': workflow['id'],
+                         'run_id': run['id'], 'run_attempt': run['run_attempt'],
+                         'url': run['html_url'], 'conclusion': run['conclusion'],
+                         'checked_utc': datetime.now(timezone.utc).isoformat()}
+                write(out / 'ORIGINAL_COMPATIBILITY.json', proof)
+                require(run['conclusion'] == 'success', 'Original compatibility CI did not succeed.')
+                return
+            require(time.monotonic() < deadline, 'Original compatibility CI is still pending; publication withheld.')
+            time.sleep(15)
 
 
 def safe_file(root, relative):
@@ -452,7 +514,7 @@ def confirm_release(source, out):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('phase', choices=('plan', 'collision', 'validate', 'upload', 'confirm'))
+    parser.add_argument('phase', choices=('plan', 'compatibility', 'collision', 'validate', 'upload', 'confirm'))
     parser.add_argument('source', type=Path)
     parser.add_argument('output', type=Path)
     parser.add_argument('--artifacts', type=Path)
@@ -463,7 +525,7 @@ def main():
         require(args.artifacts is not None, '--artifacts is required.')
         validate_release(source, out, args.artifacts.resolve())
     else:
-        {'plan': plan_release, 'collision': collision_release,
+        {'plan': plan_release, 'compatibility': compatibility_release, 'collision': collision_release,
          'upload': upload_release, 'confirm': confirm_release}[args.phase](source, out)
 
 

@@ -39,6 +39,121 @@ class Session:
 
 
 class ReleaseControls(unittest.TestCase):
+    def test_original_ci_selects_exact_repository_workflow_head_and_branch(self):
+        good = {'id': 1, 'run_number': 10, 'run_attempt': 1, 'head_sha': 'a' * 40,
+                'head_branch': 'master', 'event': 'push', 'workflow_id': 7,
+                'repository': {'full_name': 'StableKite/greenlet'},
+                'status': 'completed', 'conclusion': 'success'}
+        other = [dict(good, **change) for change in (
+            {'head_sha': 'b' * 40}, {'head_branch': 'feature'},
+            {'event': 'pull_request'}, {'workflow_id': 8},
+            {'repository': {'full_name': 'other/greenlet'}})]
+        for wrong in other:
+            with self.subTest(wrong=wrong), self.assertRaises(ValueError):
+                release.compatibility_run([wrong], 'a' * 40, 'master', 7)
+        self.assertIs(release.compatibility_run(other + [good], 'a' * 40, 'master', 7), good)
+
+    def test_original_ci_never_falls_back_to_an_older_success(self):
+        old = {'id': 1, 'run_number': 10, 'run_attempt': 1, 'head_sha': 'a' * 40,
+               'head_branch': 'master', 'event': 'push', 'workflow_id': 7,
+               'repository': {'full_name': 'StableKite/greenlet'},
+               'status': 'completed', 'conclusion': 'success'}
+        for status, conclusion in [('completed', 'failure'), ('in_progress', None),
+                                   ('completed', 'cancelled'), ('completed', 'skipped')]:
+            latest = dict(old, id=2, run_attempt=2, status=status, conclusion=conclusion)
+            with self.subTest(conclusion=conclusion):
+                self.assertIs(release.compatibility_run([latest, old], 'a' * 40, 'master', 7), latest)
+        with self.assertRaises(ValueError):
+            release.compatibility_run([], 'a' * 40, 'master', 7)
+
+    def test_compatibility_phase_refuses_validation_only_before_any_http(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            release.write(root / 'PLAN.json', {'should_publish': False})
+            with patch('requests.Session') as session, self.assertRaisesRegex(ValueError, 'validation-only'):
+                release.compatibility_release(root, root)
+            session.assert_not_called()
+
+    def test_live_compatibility_phase_records_success_or_refuses_actual_failures(self):
+        plan = {'git_head': 'a' * 40, 'default_branch': 'master'}
+        for conclusion in ('success', 'failure', 'cancelled', 'skipped', 'timed_out'):
+            run = {'id': 1, 'run_number': 10, 'run_attempt': 1, 'head_sha': 'a' * 40,
+                   'head_branch': 'master', 'event': 'push', 'workflow_id': 7,
+                   'repository': {'full_name': 'StableKite/greenlet'},
+                   'status': 'completed', 'conclusion': conclusion, 'html_url': 'https://github.com/StableKite/greenlet/actions/runs/1'}
+            with tempfile.TemporaryDirectory() as temporary, self.subTest(conclusion=conclusion):
+                root = Path(temporary)
+                with patch.object(release, 'checked_plan', return_value=plan), \
+                     patch.dict(os.environ, {}, clear=True), patch('requests.Session') as factory:
+                    factory.return_value.__enter__.return_value.get.side_effect = [
+                        Reply(data={'id': 7, 'path': '.github/workflows/tests.yml', 'state': 'active'}),
+                        Reply(data={'total_count': 1, 'workflow_runs': [run]})]
+                    if conclusion == 'success':
+                        release.compatibility_release(root, root)
+                    else:
+                        with self.assertRaisesRegex(ValueError, 'did not succeed'):
+                            release.compatibility_release(root, root)
+                proof = release.read(root / 'ORIGINAL_COMPATIBILITY.json')
+                self.assertEqual(proof['conclusion'], conclusion)
+                self.assertEqual(proof['git_head'], plan['git_head'])
+
+    def test_all_devpi_phases_require_the_exact_successful_compatibility_receipt(self):
+        head = 'a' * 40
+        plan = {'should_publish': True, 'git_head': head, 'ref': 'refs/heads/master',
+                'default_branch': 'master', 'current_version': '1.3', 'endpoint': release.INDEX}
+        env = {'GITHUB_SHA': head, 'GITHUB_REF': 'refs/heads/master'}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            release.write(root / 'PLAN.json', plan)
+            with patch.dict(os.environ, env, clear=True), \
+                 patch.object(release, 'git', return_value=head), \
+                 patch.object(release, 'source_version', return_value='1.3'):
+                phases = ((release.collision_release, ()), (release.validate_release, (root,)),
+                          (release.upload_release, ()), (release.confirm_release, ()))
+                for function, extra in phases:
+                    with self.subTest(phase=function.__name__), self.assertRaises(FileNotFoundError):
+                        function(root, root, *extra)
+                good = {'git_head': head, 'branch': 'master',
+                        'workflow': '.github/workflows/tests.yml', 'conclusion': 'success'}
+                for change in ({'git_head': 'b' * 40}, {'branch': 'feature'},
+                               {'workflow': 'other.yml'}, {'conclusion': 'failure'}):
+                    with patch.object(release, 'read', side_effect=[plan, dict(good, **change)]), \
+                         self.subTest(change=change), self.assertRaises(ValueError):
+                        release.checked_plan(root, root)
+                release.write(root / 'ORIGINAL_COMPATIBILITY.json', good)
+                self.assertEqual(release.checked_plan(root, root), plan)
+
+    def test_pending_original_ci_times_out_without_a_success_receipt(self):
+        run = {'id': 1, 'run_number': 10, 'run_attempt': 1, 'head_sha': 'a' * 40,
+               'head_branch': 'master', 'event': 'push', 'workflow_id': 7,
+               'repository': {'full_name': 'StableKite/greenlet'},
+               'status': 'in_progress', 'conclusion': None}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch.object(release, 'checked_plan', return_value={
+                    'git_head': 'a' * 40, 'default_branch': 'master'}), \
+                 patch.dict(os.environ, {}, clear=True), patch('requests.Session') as factory, \
+                 patch.object(release.time, 'monotonic', side_effect=[0, 1801]), \
+                 patch.object(release.time, 'sleep') as sleep:
+                factory.return_value.__enter__.return_value.get.side_effect = [
+                    Reply(data={'id': 7, 'path': '.github/workflows/tests.yml', 'state': 'active'}),
+                    Reply(data={'total_count': 1, 'workflow_runs': [run]})]
+                with self.assertRaisesRegex(ValueError, 'still pending'):
+                    release.compatibility_release(root, root)
+                sleep.assert_not_called()
+            self.assertFalse((root / 'ORIGINAL_COMPATIBILITY.json').exists())
+
+    def test_original_ci_metadata_failure_prevents_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch.object(release, 'checked_plan', return_value={
+                    'git_head': 'a' * 40, 'default_branch': 'master'}), \
+                 patch.dict(os.environ, {}, clear=True), patch('requests.Session') as factory:
+                factory.return_value.__enter__.return_value.get.return_value = Reply(status=403)
+                with self.assertRaisesRegex(ValueError, 'metadata unavailable'):
+                    release.compatibility_release(root, root)
+            self.assertFalse((root / 'ORIGINAL_COMPATIBILITY.json').exists())
+
     def test_unchanged_push_skips_publication(self):
         self.assertEqual(release.release_decision('push', 'refs/heads/master', 'master', '1.2', '1.2'),
                          (False, 'unchanged-version'))
