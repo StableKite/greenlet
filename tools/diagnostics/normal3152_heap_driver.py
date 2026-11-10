@@ -18,7 +18,7 @@ out.mkdir()
 head = '2fc8d4e30645e08180c846f2c01bd921793da455'
 assert sys.version_info[:3] == (3, 15, 2) and sysconfig.get_config_var('Py_GIL_DISABLED') == 0
 assert 'PYTHON_GIL' not in os.environ and sys._is_gil_enabled()
-assert shutil.which('gdb') and shutil.which('readelf') and shutil.which('cc')
+assert shutil.which('readelf') and shutil.which('cc')
 env = dict(os.environ, PYTHONDEVMODE='1', PYTHONHASHSEED='1042466059', PYTHONDONTWRITEBYTECODE='1',
            PYTHONFAULTHANDLER='1', ZOPE_INTERFACE_STRICT_IRO='1', PYTHONUNBUFFERED='1', PYTHON_JIT='1')
 assert not any(key in env for key in ('GLIBC_TUNABLES', 'MALLOC_ARENA_MAX', 'MALLOC_TRIM_THRESHOLD_', 'LD_PRELOAD'))
@@ -46,6 +46,19 @@ def build_id(path):
 
 libc = Path('/lib/x86_64-linux-gnu/libc.so.6').resolve()
 libc_sha = sha256(libc.read_bytes()).hexdigest()
+runtime_sha = sha256(Path(sys.executable).read_bytes()).hexdigest()
+if not shutil.which('gdb'):
+    # Some hosted images omit GDB. Install only new diagnostic-tool packages;
+    # reject any proposed upgrade of an existing library before changing it.
+    run('diagnostic-package-indices', ['sudo', 'apt-get', 'update'], timeout=300)
+    packages = ['apt-get', '--no-upgrade', '--no-remove', '--no-install-recommends', 'install', 'gdb']
+    run('gdb-new-packages-plan', [packages[0], '--simulate', *packages[1:]], timeout=180)
+    plan = (out / 'gdb-new-packages-plan.stdout.log').read_text()
+    assert not any(re.match(r'Inst \S+ \[', line) for line in plan.splitlines()), plan
+    run('install-new-diagnostic-tool-only', ['sudo', packages[0], '--yes', *packages[1:]], timeout=300)
+    assert sha256(libc.read_bytes()).hexdigest() == libc_sha
+    assert sha256(Path(sys.executable).read_bytes()).hexdigest() == runtime_sha
+assert shutil.which('gdb')
 run('host-libc-version', ['getconf', 'GNU_LIBC_VERSION'])
 assert (out / 'host-libc-version.stdout.log').read_text().strip() == 'glibc 2.39'
 identifier = build_id(libc)
