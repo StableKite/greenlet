@@ -485,7 +485,7 @@ class TestLeaks(TestCase):
         # (Microsoft Windows Server 2025 10.0.26100).
         #
         # Reevaluate on future runner image releases.
-        if WIN and RUNNING_ON_FREETHREAD_BUILD and PY314:
+        if WIN and RUNNING_ON_FREETHREAD_BUILD and sys.version_info[:2] == (3, 14):
             self.skipTest("Windows 3.14t appears to leak. No other platform does.")
         self._check_untracked_memory_thread(deallocate_in_thread=False)
 
