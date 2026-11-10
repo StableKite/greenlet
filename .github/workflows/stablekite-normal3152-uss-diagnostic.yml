@@ -22,15 +22,15 @@ jobs:
           python-version: '3.15'
           allow-prereleases: false
           check-latest: true
-      - name: Read matched-libc arena and tcache state around the original USS spike
-        run: python -I -B tools/diagnostics/normal3152_heap_driver.py
+      - name: Compare unchanged original suites before and after Python error status delivery on one runner
+        run: python -I -B tools/diagnostics/normal3152_error_status_pair_driver.py
       - name: Preserve read-only diagnostics without environments
         if: always()
         run: python -I -B tools/diagnostics/normal3152_uss_export.py uss-heap-gdb uss-heap-gdb-upload
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: normal3152-USS-matched-libc-read-only-heap
+          name: normal3152-USS-Python-error-status-before-after
           path: uss-heap-gdb-upload/
           if-no-files-found: error
           include-hidden-files: true
