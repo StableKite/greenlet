@@ -129,7 +129,10 @@ with (out / 'one-original-full-suite-late-attach.stdout.log').open('xb') as stdo
                     try:
                         run('late-attach-read-only-gdb', ['sudo', '-n', 'env',
                             'SK_HEAP_GDB_OUT=' + str(gdb_output), 'SK_HEAP_GDB_ATTACH_ONLY=1',
-                            'gdb', '-nh', '-nx', '--batch', '-p', str(process.pid),
+                            'gdb', '-nh', '-nx', '--batch',
+                            '-iex', 'set debuginfod enabled off',
+                            '-iex', 'set auto-load python-scripts off',
+                            '-iex', debug_setting, '-p', str(process.pid),
                             '-ex', 'set pagination off', '-ex', 'set confirm off',
                             '-ex', 'set debuginfod enabled off', '-ex', 'set auto-load python-scripts off',
                             '-ex', debug_setting,
