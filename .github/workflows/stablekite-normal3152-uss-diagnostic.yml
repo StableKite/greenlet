@@ -11,7 +11,7 @@ env:
 jobs:
   observe:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v7
         with:
@@ -22,15 +22,15 @@ jobs:
           python-version: '3.15'
           allow-prereleases: false
           check-latest: true
-      - name: Observe all four native-source and test-tree factor cells on one normal-GIL runner
+      - name: Observe distinct native source cuts and a separate address-only diagnostic cell on one normal-GIL runner
         run: python -I -B tools/diagnostics/normal3152_uss_driver.py
       - name: Preserve read-only diagnostics without environments
         if: always()
-        run: python -I -B tools/acceptance/prepare_evidence.py uss-factorial uss-factorial-upload
+        run: python -I -B tools/diagnostics/normal3152_uss_export.py uss-native-cuts uss-native-cuts-upload
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: normal3152-USS-native-test-factorial-diagnostics
-          path: uss-factorial-upload/
+          name: normal3152-USS-distinct-native-cuts-and-owner-addresses
+          path: uss-native-cuts-upload/
           if-no-files-found: error
           include-hidden-files: true

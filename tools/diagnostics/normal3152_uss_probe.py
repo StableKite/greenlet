@@ -15,9 +15,9 @@ libc=ctypes.CDLL(None)
 libc.fopen.argtypes=[ctypes.c_char_p,ctypes.c_char_p];libc.fopen.restype=ctypes.c_void_p
 libc.fclose.argtypes=[ctypes.c_void_p];libc.fclose.restype=ctypes.c_int
 libc.malloc_info.argtypes=[ctypes.c_int,ctypes.c_void_p];libc.malloc_info.restype=ctypes.c_int
-original=TestCase.get_process_uss;sequence=0
+original=TestCase.get_process_uss;sequence=0;profile_memory_reads=0
 def observed_uss(self):
-    global sequence
+    global sequence,profile_memory_reads
     value=original(self)
     if 'untracked_memory' in self.id():
         number=sequence;sequence+=1
@@ -28,6 +28,9 @@ def observed_uss(self):
         row=dict(sequence=number,test=self.id(),USS=value,allocated_blocks=sys.getallocatedblocks(),
                  native_main_greenlets=greenlet._greenlet.get_total_main_greenlets(),
                  native_pending=greenlet._greenlet.get_pending_cleanup_count())
+        if os.environ.get('GREENLET_OWNER_ADDRESS_DIAGNOSTIC')=='1' and self.id().endswith('unfinished_thread_dealloc_in_thread') and profile_memory_reads<5:
+            maps=Path('/proc/self/maps').read_bytes();(out/f'maps-{number:04}.txt').write_bytes(maps)
+            row['owner_profile_mapping']=f'maps-{number:04}.txt';profile_memory_reads+=1
         with (out/'USS_OBSERVATIONS.jsonl').open('a') as stream:stream.write(json.dumps(row)+'\n')
     return value
 TestCase.get_process_uss=observed_uss
