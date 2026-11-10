@@ -26,6 +26,17 @@ from greenlet.tests import TestCase
 
 class TestInterpreterShutdown(TestCase): # pylint:disable=too-many-public-methods
 
+    def test_finished_greenlet_at_shutdown(self):
+        rc, stdout, stderr = self._run_shutdown_script("""\
+            from greenlet import greenlet
+            task = greenlet(lambda: 73)
+            assert task.switch() == 73
+            assert task.dead
+            print('FINISHED_GREENLET_SHUTDOWN_PASS')
+        """)
+        self.assertEqual(rc, 0, stdout + stderr)
+        self.assertIn('FINISHED_GREENLET_SHUTDOWN_PASS', stdout)
+
     def _run_shutdown_script(self, script_body):
         """
         Run a Python script in a subprocess that exercises greenlet

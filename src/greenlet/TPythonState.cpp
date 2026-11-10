@@ -617,7 +617,7 @@ void PythonState::tp_clear(bool own_top_frame) noexcept
     // transferred the frames. Resume or actual frame disposal releases them.
     if (own_top_frame)
 #endif
-    this->c_stack_ref_snapshot.clear();
+    std::vector<OwnedObject>().swap(this->c_stack_ref_snapshot);
 #endif
     // If we get here owning a frame,
     // we got dealloc'd without being finished. We may or may not be

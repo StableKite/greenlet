@@ -490,7 +490,12 @@ public:
         if (greenlet::IsShuttingDown()) {
             this->tracefunc.CLEAR();
             if (this->current_greenlet) {
-                this->current_greenlet->murder_in_place();
+                if (this->current_greenlet == this->main_greenlet) {
+                    this->current_greenlet->tp_clear();
+                }
+                else {
+                    this->current_greenlet->murder_in_place();
+                }
                 this->current_greenlet.CLEAR();
             }
             this->main_greenlet.CLEAR();

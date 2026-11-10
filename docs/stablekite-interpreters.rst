@@ -124,3 +124,27 @@ post-upload confirmation downloads all six files and compares the exact bytes.
 Offline failure controls never contact devpi. Implemented automation alone does
 not qualify a release: successful exact-head CI, actual protected-index readback
 and default-branch installation evidence remain required.
+
+
+Unified shutdown and sanitizer integration
+-----------------------------------------
+
+The unified candidate includes the separate shutdown and ASan fiber work.
+Native deletion queues already transfer ownership under their mutex and run
+callbacks after releasing it. Per-interpreter ContextRoot.close() invalidates
+all native handles and clears states attached to the owner before teardown;
+the legacy process-wide cleanup capsule is superseded by this existing owner.
+The fallback shutdown destructor clears a current main greenlet directly.
+Final frame disposal also releases the native snapshot buffer capacity, while
+the 3.14 suspended-frame owning pins keep their previous lifetime guard.
+
+On Linux, GREENLET_ASAN_FIBERS=1 enables sanitizer fiber notifications for
+an instrumented build. Each logical stack retains its own fake-stack handle;
+the physical native stack bounds are thread-local C data. The hook uses the
+const current-greenlet getter: queue maintenance cannot run after PythonState
+has been saved for the low-level stack switch. Normal builds omit the hooks.
+
+The original 172 test identities remain, with a finished-greenlet shutdown
+regression and four additional public fiber scenarios. These source changes
+require fresh native and sanitizer qualification. They do not close the
+separate stock-musl CPython errno defect or imply a completed publication.

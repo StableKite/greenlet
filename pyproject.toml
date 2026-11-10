@@ -6,7 +6,7 @@ requires = [
 
 [project]
 name = "greenlet"
-version = "3.5.7.dev1+stablekite.1"
+version = "3.5.7.dev1+stablekite.2"
 description = "Lightweight in-process concurrent programming"
 readme = "README.rst"
 authors = [

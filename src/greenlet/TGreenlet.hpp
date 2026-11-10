@@ -390,6 +390,9 @@ namespace greenlet
         SwitchingArgs switch_args;
         StackState stack_state;
         PythonState python_state;
+#if defined(GREENLET_ASAN_FIBERS)
+        void* asan_fake_stack = nullptr;
+#endif
         Greenlet(PyGreenlet* p, const StackState& initial_state);
     public:
         // This constructor takes ownership of the PyGreenlet, by
