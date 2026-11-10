@@ -1,5 +1,6 @@
 """Public stack-copying operations with sanitizer fiber notifications."""
 import gc
+from concurrent.futures import ThreadPoolExecutor
 import threading
 import unittest
 
@@ -16,7 +17,7 @@ class SanitizerFiberTests(unittest.TestCase):
                 value = parent.switch('size')
                 return value
 
-        for unused in range(100):
+        for _unused in range(100):
             worker = greenlet(lambda: [None] * Size())
             self.assertEqual(worker.switch(), 'size')
             self.assertEqual(worker.switch(3), [None, None, None])
@@ -24,7 +25,7 @@ class SanitizerFiberTests(unittest.TestCase):
 
     def test_suspended_and_finished_stacks_coexist(self):
         parent = getcurrent()
-        workers = [greenlet(lambda: parent.switch('waiting')) for unused in range(20)]
+        workers = [greenlet(lambda: parent.switch('waiting')) for _unused in range(20)]
         for worker in workers:
             self.assertEqual(worker.switch(), 'waiting')
         for value, worker in enumerate(reversed(workers)):
@@ -41,7 +42,7 @@ class SanitizerFiberTests(unittest.TestCase):
             except ValueError:
                 return 'caught'
 
-        for unused in range(100):
+        for _unused in range(100):
             worker = greenlet(work)
             self.assertEqual(worker.switch(), 'waiting')
             self.assertEqual(worker.throw(ValueError('ordinary cancellation')), 'caught')
@@ -49,28 +50,21 @@ class SanitizerFiberTests(unittest.TestCase):
 
     def test_native_threads_keep_independent_switch_state(self):
         barrier = threading.Barrier(2)
-        results, errors = [], []
-
         def thread_work():
-            try:
-                parent = getcurrent()
-                barrier.wait(timeout=5)
-                for value in range(100):
-                    worker = greenlet(lambda: parent.switch('waiting'))
-                    self.assertEqual(worker.switch(), 'waiting')
-                    self.assertEqual(worker.switch(value), value)
-                    self.assertTrue(worker.dead)
-                results.append(threading.get_native_id())
-            except BaseException as error:
-                errors.append(error)
+            parent = getcurrent()
+            barrier.wait(timeout=5)
+            for value in range(100):
+                worker = greenlet(lambda: parent.switch('waiting'))
+                self.assertEqual(worker.switch(), 'waiting')
+                self.assertEqual(worker.switch(value), value)
+                self.assertTrue(worker.dead)
+            return threading.get_native_id()
 
-        threads = [threading.Thread(target=thread_work) for unused in range(2)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(timeout=10)
-        self.assertTrue(all(not thread.is_alive() for thread in threads))
-        self.assertEqual(errors, [])
+        # Future.result propagates every worker exception to unittest, including
+        # failures outside the assertions. The barrier requires two OS threads.
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(thread_work) for _unused in range(2)]
+            results = [future.result(timeout=10) for future in futures]
         self.assertEqual(len(set(results)), 2)
 
 
