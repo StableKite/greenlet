@@ -13,6 +13,29 @@
 #define TGREENLET_CPP
 #include "greenlet_internal.hpp"
 #include "TGreenlet.hpp"
+#if defined(GREENLET_ASAN_FIBERS)
+#include <pthread.h>
+#include <sanitizer/common_interface_defs.h>
+
+static thread_local void* greenlet_asan_stack_bottom = nullptr;
+static thread_local size_t greenlet_asan_stack_size = 0;
+
+static void greenlet_asan_native_stack_bounds()
+{
+    if (greenlet_asan_stack_bottom) return;
+    pthread_attr_t attributes;
+    if (pthread_getattr_np(pthread_self(), &attributes) != 0) {
+        Py_FatalError("greenlet: cannot query ASan fiber stack bounds");
+    }
+    int result = pthread_attr_getstack(&attributes,
+                                     &greenlet_asan_stack_bottom,
+                                     &greenlet_asan_stack_size);
+    pthread_attr_destroy(&attributes);
+    if (result != 0) {
+        Py_FatalError("greenlet: cannot read ASan fiber stack bounds");
+    }
+}
+#endif
 
 
 #include "TGreenletGlobals.cpp"
@@ -187,6 +210,15 @@ Greenlet::g_switchstack(void)
         err = -1;
     }
     else {
+#if defined(GREENLET_ASAN_FIBERS)
+        // Greenlets copy logical stacks over this thread's native stack.
+        // Each logical stack retains its own ASan fake-stack lifetime.
+        greenlet_asan_native_stack_bounds();
+        Greenlet* origin = this->thread_state()->borrow_current().operator->();
+        __sanitizer_start_switch_fiber(origin->active() ? &origin->asan_fake_stack : nullptr,
+                                      greenlet_asan_stack_bottom,
+                                      greenlet_asan_stack_size);
+#endif
         err = slp_switch();
     }
 
@@ -208,6 +240,10 @@ Greenlet::g_switchstack(void)
     // But the global is thread_local volatile so we can reload it without the
     // compiler caching it from earlier.
     Greenlet* greenlet_that_switched_in = switching_thread_state; // aka this
+#if defined(GREENLET_ASAN_FIBERS)
+    __sanitizer_finish_switch_fiber(greenlet_that_switched_in->asan_fake_stack,
+                                    nullptr, nullptr);
+#endif
     switching_thread_state = nullptr;
     // except that no stack variables are valid, we would:
     // assert(this == greenlet_that_switched_in);

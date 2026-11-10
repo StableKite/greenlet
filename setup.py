@@ -23,6 +23,12 @@ cpp_link_args = []
 # Extra compiler arguments passed to the main extension
 main_compile_args = []
 
+asan_fiber_macros = []
+if os.environ.get('GREENLET_ASAN_FIBERS') == '1':
+    if not sys.platform.startswith('linux'):
+        raise RuntimeError('ASan fiber annotations currently require Linux')
+    asan_fiber_macros.append(('GREENLET_ASAN_FIBERS', '1'))
+
 is_win = sys.platform.startswith("win")
 
 # workaround segfaults on openbsd and RHEL 3 / CentOS 3 . see
@@ -162,7 +168,7 @@ else:
                 GREENLET_HEADER,
                 GREENLET_SRC_DIR + 'slp_platformselect.h',
             ] + _find_platform_headers() + _find_impl_headers(),
-            define_macros=[
+            define_macros=asan_fiber_macros + [
             ] + ([
                 ('WIN32', '1'),
             ] if is_win else [
