@@ -30,6 +30,56 @@ def chunk(value):
                'non_main_arena': bool(raw & 4), 'prev_size': int(p['mchunk_prev_size'])}
 
 
+def cached_pthread_tls():
+    """Read real glibc cached pthread descriptors and their DTV ownership."""
+    modules = {}
+    info = gdb.parse_and_eval('_rtld_global._dl_tls_dtv_slotinfo_list')
+    visited = set()
+    while info:
+        assert address(info) not in visited and len(visited) < 128
+        visited.add(address(info))
+        length = int(info['len'])
+        assert 0 <= length <= 1024
+        array = info['slotinfo']
+        entries = array.address.cast(array.type.target().pointer())
+        for index in range(length):
+            link = entries[index]['map']
+            if link and int(link['l_tls_modid']):
+                modid = int(link['l_tls_modid'])
+                modules[modid] = {'module': link['l_name'].string(),
+                    'link_map': hex(address(link)), 'TLS_bytes': int(link['l_tls_blocksize']),
+                    'TLS_alignment': int(link['l_tls_align'])}
+        info = info['next']
+    head = gdb.parse_and_eval('&_rtld_global._dl_stack_cache')
+    pthread = gdb.lookup_type('struct pthread')
+    list_offset = next(f.bitpos // 8 for f in pthread.fields() if f.name == 'list')
+    current = head['next']
+    visited = set()
+    cached = []
+    while address(current) != address(head):
+        assert address(current) not in visited and len(visited) < 128
+        visited.add(address(current))
+        descriptor = address(current) - list_offset
+        value = gdb.Value(descriptor).cast(pthread.pointer()).dereference()
+        dtv = value['header']['dtv']
+        item = {'pthread': hex(descriptor), 'tid': int(value['tid']),
+                'stackblock': hex(address(value['stackblock'])),
+                'stackblock_size': int(value['stackblock_size']), 'dynamic_TLS': []}
+        if dtv:
+            length = int(dtv[-1]['counter'])
+            assert 0 <= length <= 1024
+            item['DTV_capacity'] = length
+            for index in range(1, length + 1):
+                base = address(dtv[index]['pointer']['to_free'])
+                if base:
+                    item['dynamic_TLS'].append({'modid': index, 'to_free': hex(base),
+                        'val': hex(address(dtv[index]['pointer']['val'])),
+                        'module': modules.get(index)})
+        cached.append(item)
+        current = current['next']
+    return {'status': 'PASS_READ_ONLY_CACHED_PTHREAD_DTV', 'modules': modules, 'cached_threads': cached}
+
+
 def snapshot(phase):
     inferior = gdb.selected_inferior()
     pid = inferior.pid
@@ -93,6 +143,10 @@ def snapshot(phase):
                         _, adjacent = chunk(current + item['bytes'])
                         adjacent['in_selected_thread_tcache'] = current + item['bytes'] in cached
                         adjacent['user'] = hex(current + item['bytes'] + 2 * size)
+                        length = max(0, min(64, adjacent['bytes'] - 2 * size))
+                        adjacent['native_payload_words'] = [hex(int.from_bytes(word, 'little')) for word in
+                            (bytes(inferior.read_memory(current + item['bytes'] + 2 * size + offset, size))
+                             for offset in range(0, length, size))]
                         item['next_chunk'] = adjacent
                     record['free_bins'].append(item)
                     current = address(value['fd'])
@@ -108,6 +162,23 @@ def snapshot(phase):
                     record['fast_bins'].append(item)
                     current = address(value['fd']) ^ ((current + fd_offset) >> 12)
             arena_ptr = state['next']
+        try:
+            result['cached_pthread_TLS'] = cached_pthread_tls()
+            matches = []
+            for arena in result['arenas']:
+                for free in arena['free_bins']:
+                    if 'next_chunk' not in free:
+                        continue
+                    pin = free['next_chunk']
+                    user = int(pin['user'], 16)
+                    for thread in result['cached_pthread_TLS']['cached_threads']:
+                        for block in thread['dynamic_TLS']:
+                            if user == int(block['to_free'], 16) or user <= int(block['val'], 16) < user + pin['bytes'] - 2 * size:
+                                matches.append({'free_bytes': free['bytes'], 'pin': pin,
+                                    'pthread': thread['pthread'], 'TLS_block': block})
+            result['retained_pin_TLS_matches'] = matches
+        except Exception:
+            result['cached_pthread_TLS'] = {'status': 'TLS_OBSERVATION_ERROR', 'error': traceback.format_exc()}
         result['status'] = 'PASS_READ_ONLY_ARENA_AND_MAIN_TCACHE_SNAPSHOT'
     except Exception:
         result['status'] = 'DIAGNOSTIC_SNAPSHOT_ERROR_NO_ACCEPTANCE_CLAIM'
