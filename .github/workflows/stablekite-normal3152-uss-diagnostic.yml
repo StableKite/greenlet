@@ -22,15 +22,15 @@ jobs:
           python-version: '3.15'
           allow-prereleases: false
           check-latest: true
-      - name: Observe distinct native source cuts and a separate address-only diagnostic cell on one normal-GIL runner
-        run: python -I -B tools/diagnostics/normal3152_uss_driver.py
+      - name: Read matched-libc arena and tcache state around the original USS spike
+        run: python -I -B tools/diagnostics/normal3152_heap_driver.py
       - name: Preserve read-only diagnostics without environments
         if: always()
-        run: python -I -B tools/diagnostics/normal3152_uss_export.py uss-native-cuts uss-native-cuts-upload
+        run: python -I -B tools/diagnostics/normal3152_uss_export.py uss-heap-gdb uss-heap-gdb-upload
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: normal3152-USS-distinct-native-cuts-and-owner-addresses
-          path: uss-native-cuts-upload/
+          name: normal3152-USS-matched-libc-read-only-heap
+          path: uss-heap-gdb-upload/
           if-no-files-found: error
           include-hidden-files: true
