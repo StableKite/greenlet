@@ -502,9 +502,12 @@ Greenlet::g_switch_finish(const switchstack_result_t& err)
             // We get here if we fell of the end of the run() function
             // raising an exception. The switch itself was
             // successful, but the function raised.
-            // valgrind reports that memory allocated here can still
-            // be reached after a test run.
-            throw PyErrOccurred::from_current();
+            // The C API callers already accept a null result with the
+            // Python exception set. Preserve that error directly instead
+            // of allocating a C++ exception merely to transport it through
+            // the final switch return path.
+            this->release_args();
+            return OwnedObject();
         }
         return result;
     }
