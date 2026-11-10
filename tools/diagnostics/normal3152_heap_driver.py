@@ -139,7 +139,9 @@ with (out / 'one-original-full-suite-late-attach.stdout.log').open('xb') as stdo
                             '-ex', 'source ' + str(source / 'tools/diagnostics/normal3152_heap_gdb.py'),
                             '-ex', 'python next(t for t in gdb.selected_inferior().threads() if t.ptid[1] == gdb.selected_inferior().pid).switch()',
                             '-ex', 'python snapshot(0)',
-                            '-ex', 'hbreak __cxa_throw', '-ex', 'signal SIGCONT',
+                            '-ex', 'hbreak __cxa_throw',
+                            '-ex', 'handle SIGSTOP nostop noprint nopass',
+                            '-ex', 'signal SIGCONT',
                             '-ex', 'bt 25', '-ex', 'info symbol $rsi',
                             '-ex', 'detach'], required=False, timeout=180)
                     finally:
@@ -166,5 +168,8 @@ result = {'status': 'DIAGNOSTIC_LATE_ATTACH_ONLY_AFTER_MEASURED_SPIKE_NOT_ACCEPT
           'debugger_during_workload_before_measured_spike': False,
           'malloc_trim_or_inferior_function_calls': False, 'canonical_source_or_SDK_changed': False,
           'libc_bytes_unchanged': True, 'acceptance_claimed': False}
+trace_path = out / 'late-attach-read-only-gdb.stdout.log'
+trace = trace_path.read_text() if trace_path.is_file() else ''
+result['actual_cpp_throw_observed'] = '__cxa_throw' in trace and 'hit Hardware assisted breakpoint' in trace
 (out / 'RESULT.json').write_text(json.dumps(result, indent=2) + '\n')
 print(json.dumps({key: value for key, value in result.items() if key not in ('original_test_hashes', 'original_assertions')}), flush=True)
